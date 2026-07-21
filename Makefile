@@ -42,6 +42,21 @@ migrate-drop:
 tables:
 	docker exec -it postgres-db psql -U $(DB_USER) -d $(DB_NAME) -c "\dt"
 
+# ==========================================
+# WBW (เดินรอบดอย)
+# ==========================================
+
+# สร้างผู้ดูแลคนแรก: make wbw-admin user=admin pass=yourpassword name="ชื่อที่แสดง"
+wbw-admin:
+	go run cmd/createadmin/main.go $(user) $(pass) $(name)
+
+wbw-schools:
+	http GET $(BASE_URL_DEVELOPMENT)/../wbw/admin/schools
+
+# ตรวจว่า school_id ตรงกับที่ frontend hardcode ไว้ (web-next/components/register/mfu-data.ts)
+wbw-check-schools:
+	docker exec -it postgres-db psql -U $(DB_USER) -d $(DB_NAME) -c "SELECT school_id, name FROM school ORDER BY school_id;"
+
 check-schema-migrations:
 	docker exec -it postgres-db psql -U $(DB_USER) -d $(DB_NAME) -c "SELECT * FROM schema_migrations;" \dt
 

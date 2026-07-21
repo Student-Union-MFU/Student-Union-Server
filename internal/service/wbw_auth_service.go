@@ -1,0 +1,108 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"regexp"
+	"strings"
+
+	"su-server/internal/model"
+	"su-server/internal/repository"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+// ข้อผิดพลาดเชิงธุรกิจ — handler แปลงเป็น status + ข้อความไทย
+var (
+	ErrBadStudentID   = errors.New("bad student id")
+	ErrShortPassword  = errors.New("short password")
+	ErrHasChronic     = errors.New("has chronic condition")
+	ErrDuplicateUser  = errors.New("duplicate user")
+	ErrBadCredentials = errors.New("bad credentials")
+	ErrMissingFields  = errors.New("missing fields")
+)
+
+// นักศึกษาชั้นปีที่ 1 — 10 หลัก ขึ้นต้น 693
+var studentIDRe = regexp.MustCompile(`^693\d{7}$`)
+
+// bcrypt cost 10 ให้ตรงกับ Express เดิม (bcryptjs hash(pw, 10))
+// hash ที่สร้างจากฝั่งเดิมจึงยังใช้ล็อกอินผ่าน Go ได้
+const bcryptCost = 10
+
+type WBWAuthService struct {
+	repo   *repository.WBWAuthRepository
+	tokens *WBWTokenService
+}
+
+func NewWBWAuthService(repo *repository.WBWAuthRepository, tokens *WBWTokenService) *WBWAuthService {
+	return &WBWAuthService{repo: repo, tokens: tokens}
+}
+
+func (s *WBWAuthService) Register(ctx context.Context, req model.RegisterRequest) (*model.AuthResponse, error) {
+	sid := strings.TrimSpace(req.StudentID)
+	if sid == "" {
+		sid = strings.TrimSpace(req.Username)
+	}
+	if !studentIDRe.MatchString(sid) {
+		return nil, ErrBadStudentID
+	}
+	if len(req.Password) < 8 {
+		return nil, ErrShortPassword
+	}
+	// กิจกรรมรับเฉพาะผู้ไม่มีโรคประจำตัว
+	if len(req.Health.ChronicConditions) > 0 {
+		return nil, ErrHasChronic
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
+	if err != nil {
+		return nil, err
+	}
+
+	// medical.birthdate มาก่อน profile.date_of_birth
+	birthdate := req.Medical.Birthdate
+	if birthdate == nil || *birthdate == "" {
+		birthdate = req.Profile.DateOfBirth
+	}
+	if birthdate != nil && *birthdate == "" {
+		birthdate = nil
+	}
+
+	user, err := s.repo.Register(ctx, req, sid, string(hash), birthdate)
+	if err != nil {
+		if errors.Is(err, repository.ErrDuplicate) {
+			return nil, ErrDuplicateUser
+		}
+		return nil, err
+	}
+
+	token, err := s.tokens.Sign(user.UserID, user.Role, user.Username)
+	if err != nil {
+		return nil, err
+	}
+	return &model.AuthResponse{User: *user, Token: token}, nil
+}
+
+func (s *WBWAuthService) Login(ctx context.Context, req model.LoginRequest) (*model.AuthResponse, error) {
+	if req.Username == "" || req.Password == "" {
+		return nil, ErrMissingFields
+	}
+
+	user, hash, err := s.repo.FindByUsername(ctx, req.Username)
+	if err != nil {
+		return nil, err
+	}
+	// user ไม่มี กับ รหัสผิด ตอบเหมือนกัน — กัน enumeration
+	if user == nil {
+		return nil, ErrBadCredentials
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil {
+		return nil, ErrBadCredentials
+	}
+
+	token, err := s.tokens.Sign(user.UserID, user.Role, user.Username)
+	if err != nil {
+		return nil, err
+	}
+	return &model.AuthResponse{User: *user, Token: token}, nil
+}

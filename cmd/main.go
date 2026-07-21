@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
 	"su-server/config"
 	"su-server/internal/handler"
+	appmw "su-server/internal/middleware"
 	"su-server/internal/repository"
 	"su-server/internal/service"
 
@@ -26,7 +28,7 @@ func main() {
 
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost:3001", "https://yourdomain.com"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,
 	}))
@@ -58,6 +60,36 @@ func main() {
 	leaderboardRepository := repository.NewLeaderboardRepository(db)
 	leaderboardService := service.NewLeaderboardService(leaderboardRepository)
 	leaderboardHandler := handler.NewLeaderboardHandler(leaderboardService)
+
+	// ---------- WBW (เดินรอบดอย) ----------
+	// ใช้ connection pool ไม่ใช่ *pgx.Conn เดี่ยว — conn เดียวไม่ปลอดภัยเมื่อมี request พร้อมกัน
+	pool, err := config.ConnectPool(context.Background())
+	if err != nil {
+		slog.Error("WBW pool connection failed", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+	slog.Info("WBW POOL CONNECTED")
+
+	wbwTokens := service.NewWBWTokenService()
+
+	wbwAuthRepo := repository.NewWBWAuthRepository(pool)
+	wbwAuthService := service.NewWBWAuthService(wbwAuthRepo, wbwTokens)
+	wbwAuthHandler := handler.NewWBWAuthHandler(wbwAuthService)
+
+	wbwAdminRepo := repository.NewWBWAdminRepository(pool)
+	wbwCheckpointRepo := repository.NewWBWCheckpointRepository(pool)
+	wbwAdminService := service.NewWBWAdminService(wbwAdminRepo, wbwCheckpointRepo)
+	wbwAdminHandler := handler.NewWBWAdminHandler(wbwAdminService)
+
+	wbwNotiRepo := repository.NewWBWNotificationRepository(pool)
+	wbwNotiService := service.NewWBWNotificationService(wbwNotiRepo)
+	wbwNotiHandler := handler.NewWBWNotificationHandler(wbwNotiService, wbwAdminService)
+
+	// ต้องผ่าน RequireAuth ก่อนเสมอ แล้วจึงเช็ค role
+	requireAuth := appmw.RequireAuth(wbwTokens)
+	requireAdmin := appmw.RequireRole("admin")
+	requireStaff := appmw.RequireRole("admin", "staff")
 
     r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -96,6 +128,80 @@ func main() {
 			r.Get("/{userID}", leaderboardHandler.GetUserRank)
 			r.Post("/update", leaderboardHandler.UpdateEntry)
 			r.Post("/reset", leaderboardHandler.Reset)
+		})
+	})
+
+	/* ============================================================
+	   WBW routes — เว็บ web-next proxy /api/* มาที่นี่
+	   next.config.ts ตัด /api ออก แล้วยิงไป ${API_UPSTREAM}/:path*
+	   ตั้ง API_UPSTREAM=http://localhost:8080/wbw
+	   ============================================================ */
+	r.Route("/wbw", func(r chi.Router) {
+		r.Route("/auth", func(r chi.Router) {
+			r.Post("/register", wbwAuthHandler.Register)
+			r.Post("/login", wbwAuthHandler.Login)
+		})
+
+		r.Route("/admin", func(r chi.Router) {
+			// หน้าสมัครเรียกก่อนล็อกอิน — ต้องเปิดสาธารณะ (ตรงกับของเดิม)
+			r.Get("/schools", wbwAdminHandler.ListSchools)
+
+			r.Group(func(r chi.Router) {
+				r.Use(requireAuth, requireAdmin)
+
+				r.Get("/dashboard", wbwAdminHandler.Dashboard)
+				r.Get("/logs", wbwAdminHandler.ListLogs)
+				r.Get("/bases-overview", wbwAdminHandler.BasesOverview)
+
+				r.Route("/participants", func(r chi.Router) {
+					r.Get("/", wbwAdminHandler.ListParticipants)
+					r.Get("/{id}/detail", wbwAdminHandler.ParticipantDetail)
+					r.Patch("/{id}", wbwAdminHandler.UpdateParticipant)
+					r.Post("/{id}/reset-password", wbwAdminHandler.ResetParticipantPassword)
+					r.Delete("/{id}", wbwAdminHandler.DeleteParticipant)
+				})
+
+				r.Route("/checkpoints", func(r chi.Router) {
+					r.Get("/", wbwAdminHandler.ListCheckpoints)
+					r.Post("/", wbwAdminHandler.CreateCheckpoint)
+					r.Patch("/{id}", wbwAdminHandler.UpdateCheckpoint)
+					r.Delete("/{id}", wbwAdminHandler.DeleteCheckpoint)
+					r.Post("/{id}/staff", wbwAdminHandler.AssignStaff)
+					r.Delete("/{id}/staff/{userId}", wbwAdminHandler.RemoveStaff)
+				})
+
+				r.Route("/users", func(r chi.Router) {
+					r.Get("/", wbwAdminHandler.ListUsers)
+					r.Post("/", wbwAdminHandler.CreateUser)
+					r.Patch("/{id}", wbwAdminHandler.UpdateUser)
+					r.Post("/{id}/password", wbwAdminHandler.SetUserPassword)
+					r.Delete("/{id}", wbwAdminHandler.DeleteUser)
+				})
+			})
+		})
+
+		r.Route("/groups", func(r chi.Router) {
+			r.Use(requireAuth)
+			r.Get("/", wbwAdminHandler.ListGroups)
+		})
+
+		r.Route("/notifications", func(r chi.Router) {
+			r.Use(requireAuth)
+
+			// ผู้เข้าร่วมอ่านประกาศของตัวเองได้
+			r.Get("/", wbwNotiHandler.List)
+
+			r.Group(func(r chi.Router) {
+				r.Use(requireStaff)
+				r.Post("/", wbwNotiHandler.Create)
+				r.Get("/sent", wbwNotiHandler.ListSent)
+				r.Get("/draft", wbwNotiHandler.GetDraft)
+				r.Put("/draft", wbwNotiHandler.SaveDraft)
+				r.Delete("/draft", wbwNotiHandler.DeleteDraft)
+				r.Get("/presets", wbwNotiHandler.ListPresets)
+				r.Post("/presets", wbwNotiHandler.CreatePreset)
+				r.Delete("/presets/{id}", wbwNotiHandler.DeletePreset)
+			})
 		})
 	})
 

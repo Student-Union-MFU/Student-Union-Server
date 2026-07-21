@@ -6,6 +6,12 @@ services:
       - "8080:8080"
     env_file:
       - .env
+    environment:
+      # ทับค่าจาก .env เฉพาะตอนรันใน compose
+      # ใน container คำว่า localhost = ตัว container เอง ไม่ใช่เครื่องเรา
+      # ต้องเรียก DB ด้วยชื่อ service ("database") ผ่าน network ของ compose
+      # .env ยังเป็น localhost ไว้ให้ `make dev` (go run บนเครื่อง) ใช้ได้เหมือนเดิม
+      - DB_HOST=database
     depends_on:
       database: 
         condition: service_healthy
