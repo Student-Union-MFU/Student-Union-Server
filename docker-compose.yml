@@ -4,21 +4,42 @@ services:
   # the whole reason we need it: the server sits on a private address behind
   # campus NAT where Let's Encrypt could never reach us.
   #
-  # Which public hostname maps to which service is configured in the Cloudflare
-  # dashboard, not here. Point yours at http://backend:8080 — "backend" is the
-  # compose service name, resolvable on this network.
+  # QUICK TUNNEL mode: no account, no domain, no token. Cloudflare assigns a
+  # random *.trycloudflare.com hostname with a real cert. Read it out of the
+  # logs — it is printed nowhere else:
+  #   docker compose logs cloudflared | grep trycloudflare
+  #
+  # The URL CHANGES on every restart. That is the tradeoff for needing no
+  # domain, and it is why this cannot back Google OAuth: the redirect URI has
+  # to be a fixed URL registered in Google Cloud Console.
+  #
+  # Once a domain exists, switch to the named tunnel below.
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
     restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      # Deliberately not ${TUNNEL_TOKEN:?...}: the :? form aborts every compose
-      # command when unset, including `down`, which locks you out of stopping
-      # the stack. cloudflared reports a missing token clearly enough on its own.
-      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    command: tunnel --no-autoupdate --url http://backend:8080
     depends_on:
       - backend
+
+  # NAMED TUNNEL — stable hostname, needs a domain on Cloudflare. To switch:
+  # comment out the quick-tunnel service above, uncomment this, and put the
+  # connector token in .env. Route the hostname to http://backend:8080 in the
+  # Cloudflare dashboard (NOT localhost:8080 — that resolves to the cloudflared
+  # container itself and 502s).
+  #
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   container_name: cloudflared
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     # Deliberately not ${TUNNEL_TOKEN:?...}: the :? form aborts every compose
+  #     # command when unset, including `down`, which locks you out of stopping
+  #     # the stack. cloudflared reports a missing token clearly enough on its own.
+  #     - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+  #   depends_on:
+  #     - backend
 
   # Only used for LAN-only serving without the tunnel. Not started by default;
   # run it with `docker compose --profile lan up -d`. Leaving it on would bind
