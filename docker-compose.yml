@@ -17,6 +17,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
+    profiles: ["remote"]
     restart: unless-stopped
     command: tunnel --no-autoupdate --url http://backend:8080
     depends_on:
@@ -41,9 +42,10 @@ services:
   #   depends_on:
   #     - backend
 
-  # Only used for LAN-only serving without the tunnel. Not started by default;
-  # run it with `docker compose --profile lan up -d`. Leaving it on would bind
-  # 80/443 for nothing, since the tunnel makes a reverse proxy redundant here.
+  # Fronts the backend on port 80 for machines on the same network — the
+  # backend itself is bound to loopback, so this is the only way in from the
+  # LAN. Needed because web-next running on another laptop here cannot reach
+  # 127.0.0.1:8080 on this box.
   caddy:
     image: caddy:2-alpine
     container_name: caddy

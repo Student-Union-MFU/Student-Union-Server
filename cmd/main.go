@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"su-server/config"
 	"su-server/internal/handler"
 	appmw "su-server/internal/middleware"
@@ -26,8 +27,27 @@ func main() {
 	r.Use(middleware.Logger)
     r.Use(middleware.Recoverer)
 
+	// Origins differ per way in: localhost when web-next runs on this box, a
+	// LAN address when it runs on another laptop on the same network, and a
+	// *.trycloudflare.com host through the tunnel. Anything extra goes in
+	// CORS_ALLOWED_ORIGINS (comma-separated) and is ADDED to these defaults,
+	// so a new frontend origin needs no rebuild.
+	allowedOrigins := []string{
+		"http://localhost:3000",
+		"http://localhost:3001",
+		// Quick tunnels get a fresh hostname on every restart, so match the
+		// whole domain instead of chasing the URL in .env each time.
+		"https://*.trycloudflare.com",
+	}
+	for o := range strings.SplitSeq(os.Getenv("CORS_ALLOWED_ORIGINS"), ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			allowedOrigins = append(allowedOrigins, o)
+		}
+	}
+	slog.Info("CORS origins", "allowed", allowedOrigins)
+
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost:3001", "https://yourdomain.com"},
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		AllowCredentials: true,

@@ -9,11 +9,36 @@ print-env:
 	@echo "DB: $(DB_NAME)"
 
 # Docker
+#
+# Two ways in, selected by compose profile:
+#   up-lan     Caddy on :80 — reachable from any machine on this network at
+#              http://<this-box-ip>/su-server/...
+#   up-remote  Cloudflare quick tunnel — a public https URL, no domain needed.
+#              Run `make tunnel-url` after; it changes on every restart.
+# Both can run at once (up-all). Bare `up` starts only db + backend, which are
+# reachable from this box alone since 8080 is bound to loopback.
 up:
 	docker compose up --build
 
+up-lan:
+	docker compose --profile lan up -d --build
+
+up-remote:
+	docker compose --profile remote up -d --build
+
+up-all:
+	docker compose --profile lan --profile remote up -d --build
+
+# Quick-tunnel URLs are only ever printed to the log, never stored.
+tunnel-url:
+	@docker compose logs cloudflared \
+		| grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' \
+		| tail -1 \
+		|| echo "no URL yet — is the remote profile running?"
+
+# --profile flags are needed here too, or profiled services are left running.
 down:
-	docker compose down
+	docker compose --profile lan --profile remote down
 
 logs:
 	docker compose logs -f backend
