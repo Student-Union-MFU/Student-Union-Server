@@ -13,7 +13,10 @@ services:
     restart: unless-stopped
     command: tunnel --no-autoupdate run
     environment:
-      - TUNNEL_TOKEN=${TUNNEL_TOKEN:?TUNNEL_TOKEN is unset — copy it from the Cloudflare dashboard into .env}
+      # Deliberately not ${TUNNEL_TOKEN:?...}: the :? form aborts every compose
+      # command when unset, including `down`, which locks you out of stopping
+      # the stack. cloudflared reports a missing token clearly enough on its own.
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
     depends_on:
       - backend
 
