@@ -1,4 +1,18 @@
 services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+
   backend:
     build: .
     container_name: su-server
@@ -29,8 +43,11 @@ services:
       - POSTGRES_USER=admin
       - POSTGRES_PASSWORD=yion
       - POSTGRES_DB=sudb
+    # Bound to 127.0.0.1 so `make dev` / `make migrate-up` still reach it from
+    # the host, but it is NOT reachable from the internet. A bare "5432:5432"
+    # would publish Postgres on every interface.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -45,3 +62,5 @@ networks:
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

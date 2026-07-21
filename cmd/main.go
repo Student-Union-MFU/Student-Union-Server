@@ -205,15 +205,19 @@ func main() {
 		})
 	})
 
-	serverPort := os.Getenv("PORT")
+	// SERVER_PORT is what .env sets; PORT is the convention most hosting
+	// platforms inject. Check ours first, then fall back to theirs.
+	serverPort := os.Getenv("SERVER_PORT")
+	if serverPort == "" {
+		serverPort = os.Getenv("PORT")
+	}
+	if serverPort == "" {
+		serverPort = "8080"
+	}
 
-	if serverPort == "" { serverPort = "8080"}
-    
-	slog.Info("Server running :", "port", serverPort )
-	
-	if err := http.ListenAndServe(":" + serverPort, r); err != nil {
-        slog.Error("SERVER RUN FAILED", "err", err)
-    }
-    
-	http.ListenAndServe(":8080", r)
+	slog.Info("Server running :", "port", serverPort)
+
+	if err := http.ListenAndServe(":"+serverPort, r); err != nil {
+		slog.Error("SERVER RUN FAILED", "err", err)
+	}
 }

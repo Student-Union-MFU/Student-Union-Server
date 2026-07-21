@@ -1,0 +1,6 @@
+# sslip.io resolves any embedded IP back to itself, so this hostname already
+# points at our public IP with no DNS setup. That gives Let's Encrypt a real
+# name to issue against — it will not issue for a bare IP.
+202-28-45-141.sslip.io {
+	reverse_proxy backend:8080
+}

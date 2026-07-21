@@ -3,7 +3,6 @@ package service
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -22,14 +21,18 @@ type JWTClaims struct {
 
 func NewJWTService() *JWTService {
 	secret := os.Getenv("JWT_SECRET")
-	expiryHours, err := strconv.Atoi(os.Getenv("JWT_EXPIRY_HOURS"))
+
+	// JWT_EXPIRY is a duration string ("24h", "30m"), not a bare number of
+	// hours. This previously read JWT_EXPIRY_HOURS with Atoi, which no .env
+	// ever set, so it silently fell through to the 24h default every time.
+	expiry, err := time.ParseDuration(os.Getenv("JWT_EXPIRY"))
 	if err != nil {
-		expiryHours = 24
+		expiry = 24 * time.Hour
 	}
 
 	return &JWTService{
 		secret: []byte(secret),
-		expiry: time.Duration(expiryHours) * time.Hour,
+		expiry: expiry,
 	}
 }
 
