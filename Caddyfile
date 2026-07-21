@@ -1,6 +1,10 @@
-# sslip.io resolves any embedded IP back to itself, so this hostname already
-# points at our public IP with no DNS setup. That gives Let's Encrypt a real
-# name to issue against — it will not issue for a bare IP.
-202-28-45-141.sslip.io {
+# LAN-only for now. The server sits behind NAT on a private address, so
+# Let's Encrypt cannot reach it to solve the HTTP-01 challenge — the public
+# 202.28.45.141 does not forward 80/443 here. Until we front this with a
+# Cloudflare Tunnel (or get the ports DNAT'd), serve plain HTTP.
+#
+# The explicit http:// scheme is what disables Caddy's automatic HTTPS. Drop
+# it and Caddy resumes trying to obtain a cert, which will fail on loop.
+http://172-26-55-36.sslip.io, http://172.26.55.36 {
 	reverse_proxy backend:8080
 }
