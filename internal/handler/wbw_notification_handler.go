@@ -83,6 +83,17 @@ func (h *WBWNotificationHandler) List(w http.ResponseWriter, r *http.Request) {
 	middleware.WriteJSON(w, http.StatusOK, list)
 }
 
+// ListPublic — ประกาศสาธารณะ (audience='all') · เปิดดูได้โดยไม่ต้องล็อกอิน
+func (h *WBWNotificationHandler) ListPublic(w http.ResponseWriter, r *http.Request) {
+	list, err := h.service.ListPublic(r.Context())
+	if err != nil {
+		slog.Error("list public notifications failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "โหลดข้อมูลไม่สำเร็จ")
+		return
+	}
+	middleware.WriteJSON(w, http.StatusOK, list)
+}
+
 /* ---------- draft ---------- */
 
 func (h *WBWNotificationHandler) GetDraft(w http.ResponseWriter, r *http.Request) {

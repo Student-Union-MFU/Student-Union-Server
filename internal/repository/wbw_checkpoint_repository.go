@@ -23,7 +23,7 @@ func NewWBWCheckpointRepository(db *pgxpool.Pool) *WBWCheckpointRepository {
 // List — staff เป็น {id, username, display_name} (ต่างจาก bases-overview ที่ใช้ {id, name})
 func (r *WBWCheckpointRepository) List(ctx context.Context) ([]model.Checkpoint, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT c.checkpoint_id, c.name, c.type::text, c.sequence,
+		SELECT c.checkpoint_id, c.name, c.name_en, c.type::text, c.sequence,
 		       COALESCE(json_agg(
 		         json_build_object('id', u.user_id::text, 'username', u.username, 'display_name', u.display_name)
 		         ORDER BY u.username
@@ -41,7 +41,7 @@ func (r *WBWCheckpointRepository) List(ctx context.Context) ([]model.Checkpoint,
 	list := []model.Checkpoint{}
 	for rows.Next() {
 		var c model.Checkpoint
-		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.Sequence, &c.Staff); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.NameEn, &c.Type, &c.Sequence, &c.Staff); err != nil {
 			return nil, err
 		}
 		list = append(list, c)
@@ -52,7 +52,7 @@ func (r *WBWCheckpointRepository) List(ctx context.Context) ([]model.Checkpoint,
 // BasesOverview — เฉพาะฐานที่ต้องเช็คอิน พร้อมจำนวนคนที่เช็คอินแล้ว
 func (r *WBWCheckpointRepository) BasesOverview(ctx context.Context) ([]model.BaseOverview, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT c.checkpoint_id, c.name, c.sequence, c.activity_name,
+		SELECT c.checkpoint_id, c.name, c.name_en, c.sequence, c.activity_name, c.activity_name_en,
 		       (SELECT count(*)::int FROM check_in ci WHERE ci.checkpoint_id = c.checkpoint_id) AS checkin_count,
 		       COALESCE(json_agg(
 		         json_build_object('id', u.user_id::text, 'name', COALESCE(u.display_name, u.username))
@@ -72,7 +72,7 @@ func (r *WBWCheckpointRepository) BasesOverview(ctx context.Context) ([]model.Ba
 	list := []model.BaseOverview{}
 	for rows.Next() {
 		var b model.BaseOverview
-		if err := rows.Scan(&b.ID, &b.Name, &b.Sequence, &b.ActivityName, &b.CheckinCount, &b.Staff); err != nil {
+		if err := rows.Scan(&b.ID, &b.Name, &b.NameEn, &b.Sequence, &b.ActivityName, &b.ActivityNameEn, &b.CheckinCount, &b.Staff); err != nil {
 			return nil, err
 		}
 		list = append(list, b)
@@ -80,12 +80,12 @@ func (r *WBWCheckpointRepository) BasesOverview(ctx context.Context) ([]model.Ba
 	return list, rows.Err()
 }
 
-func (r *WBWCheckpointRepository) Create(ctx context.Context, name, cpType string, sequence *int) (*model.Checkpoint, error) {
+func (r *WBWCheckpointRepository) Create(ctx context.Context, name string, nameEn *string, cpType string, sequence *int) (*model.Checkpoint, error) {
 	var c model.Checkpoint
 	err := r.db.QueryRow(ctx,
-		`INSERT INTO checkpoint (name, type, sequence) VALUES ($1, $2::checkpoint_type, $3)
-		 RETURNING checkpoint_id, name, type::text, sequence`,
-		name, cpType, sequence).Scan(&c.ID, &c.Name, &c.Type, &c.Sequence)
+		`INSERT INTO checkpoint (name, name_en, type, sequence) VALUES ($1, $2, $3::checkpoint_type, $4)
+		 RETURNING checkpoint_id, name, name_en, type::text, sequence`,
+		name, nameEn, cpType, sequence).Scan(&c.ID, &c.Name, &c.NameEn, &c.Type, &c.Sequence)
 	if err != nil {
 		return nil, err
 	}
@@ -93,17 +93,19 @@ func (r *WBWCheckpointRepository) Create(ctx context.Context, name, cpType strin
 	return &c, nil
 }
 
-// Update — name/type ใช้ COALESCE แต่ sequence เซ็ตตรงๆ (ไม่ส่งมา = NULL) ตามของเดิม
-func (r *WBWCheckpointRepository) Update(ctx context.Context, id int, name, cpType *string, sequence *int) (*model.CheckpointPatched, error) {
+// Update — name/type ใช้ COALESCE แต่ sequence/name_en เซ็ตตรงๆ (ไม่ส่งมา = NULL)
+// name_en เซ็ตตรง ๆ เพื่อให้ลบคำแปลออกได้ (ส่ง null = ล้าง) ต่างจาก name ที่ห้ามว่าง
+func (r *WBWCheckpointRepository) Update(ctx context.Context, id int, name, nameEn, cpType *string, sequence *int) (*model.CheckpointPatched, error) {
 	var c model.CheckpointPatched
 	err := r.db.QueryRow(ctx, `
 		UPDATE checkpoint SET
 		  name     = COALESCE($2, name),
-		  type     = COALESCE($3::checkpoint_type, type),
-		  sequence = $4
+		  name_en  = $3,
+		  type     = COALESCE($4::checkpoint_type, type),
+		  sequence = $5
 		WHERE checkpoint_id = $1
-		RETURNING checkpoint_id, name, type::text, sequence`,
-		id, name, cpType, sequence).Scan(&c.ID, &c.Name, &c.Type, &c.Sequence)
+		RETURNING checkpoint_id, name, name_en, type::text, sequence`,
+		id, name, nameEn, cpType, sequence).Scan(&c.ID, &c.Name, &c.NameEn, &c.Type, &c.Sequence)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

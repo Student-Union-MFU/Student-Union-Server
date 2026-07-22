@@ -107,7 +107,7 @@ func (s *WBWAdminService) CreateCheckpoint(ctx context.Context, req model.Checkp
 	if req.Type != nil && isValidCheckpointType(*req.Type) {
 		cpType = *req.Type
 	}
-	return s.cp.Create(ctx, name, cpType, req.Sequence)
+	return s.cp.Create(ctx, name, cleanOptional(req.NameEn), cpType, req.Sequence)
 }
 
 func (s *WBWAdminService) UpdateCheckpoint(ctx context.Context, id int, req model.CheckpointRequest) (*model.CheckpointPatched, error) {
@@ -122,7 +122,19 @@ func (s *WBWAdminService) UpdateCheckpoint(ctx context.Context, id int, req mode
 	if req.Type != nil && !isValidCheckpointType(*req.Type) {
 		return nil, ErrBadCheckpoint
 	}
-	return s.cp.Update(ctx, id, name, req.Type, req.Sequence)
+	return s.cp.Update(ctx, id, name, cleanOptional(req.NameEn), req.Type, req.Sequence)
+}
+
+// cleanOptional — trim ช่องว่าง · ว่าง = nil (เก็บเป็น NULL ไม่ใช่สตริงว่าง)
+func cleanOptional(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	t := strings.TrimSpace(*s)
+	if t == "" {
+		return nil
+	}
+	return &t
 }
 
 func (s *WBWAdminService) DeleteCheckpoint(ctx context.Context, id int) (string, error) {

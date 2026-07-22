@@ -5,18 +5,28 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"su-server/config"
 	"su-server/internal/handler"
 	appmw "su-server/internal/middleware"
 	"su-server/internal/repository"
 	"su-server/internal/service"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/joho/godotenv"
 )
+
+// envInt อ่าน env เป็น int · ไม่มี/ผิดรูปแบบ = ใช้ค่า default
+func envInt(key string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(key)); err == nil && v > 0 {
+		return v
+	}
+	return def
+}
 
 func main() {
 
@@ -158,6 +168,15 @@ func main() {
 	   ============================================================ */
 	r.Route("/wbw", func(r chi.Router) {
 		r.Route("/auth", func(r chi.Router) {
+			// register/login ทำ bcrypt (cost 10 ≈ 80ms CPU/ครั้ง) — ถ้าคนสมัคร/ล็อกอิน
+			// พร้อมกันหลักพันจะเผา CPU จนล่ม · จำกัดจำนวนที่ประมวลผลพร้อมกัน ที่เหลือเข้าคิว
+			// (backlog) รอถึง timeout แล้วค่อยตอบ 429 — เป็นการ "หน่วง" ไม่ใช่ "ปฏิเสธ"
+			// throughput ที่ 40 พร้อมกัน ≈ 500 req/s ยังเหลือเฟือ · ปรับผ่าน env ได้
+			r.Use(middleware.ThrottleBacklog(
+				envInt("AUTH_THROTTLE_LIMIT", 40),
+				envInt("AUTH_THROTTLE_BACKLOG", 2000),
+				time.Duration(envInt("AUTH_THROTTLE_TIMEOUT_SEC", 25))*time.Second,
+			))
 			r.Post("/register", wbwAuthHandler.Register)
 			r.Post("/login", wbwAuthHandler.Login)
 		})
@@ -200,27 +219,36 @@ func main() {
 			})
 		})
 
+		// โปรไฟล์ของตัวเอง — ผู้เข้าร่วมที่ล็อกอินอ่านข้อมูลตัวเองได้ (ไม่ต้องเป็น admin)
+		r.With(requireAuth).Get("/me", wbwAdminHandler.Me)
+
 		r.Route("/groups", func(r chi.Router) {
 			r.Use(requireAuth)
 			r.Get("/", wbwAdminHandler.ListGroups)
 		})
 
 		r.Route("/notifications", func(r chi.Router) {
-			r.Use(requireAuth)
-
-			// ผู้เข้าร่วมอ่านประกาศของตัวเองได้
-			r.Get("/", wbwNotiHandler.List)
+			// ประกาศสาธารณะ (audience=all) — หน้า /announcements เปิดดูได้โดยไม่ต้องล็อกอิน
+			// ต้องอยู่ก่อน r.Use(requireAuth) เพราะ middleware มีผลกับ route ที่ประกาศตามหลัง
+			r.Get("/public", wbwNotiHandler.ListPublic)
 
 			r.Group(func(r chi.Router) {
-				r.Use(requireStaff)
-				r.Post("/", wbwNotiHandler.Create)
-				r.Get("/sent", wbwNotiHandler.ListSent)
-				r.Get("/draft", wbwNotiHandler.GetDraft)
-				r.Put("/draft", wbwNotiHandler.SaveDraft)
-				r.Delete("/draft", wbwNotiHandler.DeleteDraft)
-				r.Get("/presets", wbwNotiHandler.ListPresets)
-				r.Post("/presets", wbwNotiHandler.CreatePreset)
-				r.Delete("/presets/{id}", wbwNotiHandler.DeletePreset)
+				r.Use(requireAuth)
+
+				// ผู้เข้าร่วมอ่านประกาศของตัวเองได้ (all + ที่เจาะจงกลุ่ม/สำนัก/รายบุคคล)
+				r.Get("/", wbwNotiHandler.List)
+
+				r.Group(func(r chi.Router) {
+					r.Use(requireStaff)
+					r.Post("/", wbwNotiHandler.Create)
+					r.Get("/sent", wbwNotiHandler.ListSent)
+					r.Get("/draft", wbwNotiHandler.GetDraft)
+					r.Put("/draft", wbwNotiHandler.SaveDraft)
+					r.Delete("/draft", wbwNotiHandler.DeleteDraft)
+					r.Get("/presets", wbwNotiHandler.ListPresets)
+					r.Post("/presets", wbwNotiHandler.CreatePreset)
+					r.Delete("/presets/{id}", wbwNotiHandler.DeletePreset)
+				})
 			})
 		})
 	})

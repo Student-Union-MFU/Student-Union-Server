@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
+	"time"
 
 	"su-server/internal/middleware"
 	"su-server/internal/model"
@@ -14,6 +16,16 @@ import (
 
 	"github.com/go-chi/chi/v5"
 )
+
+// รายชื่อสำนักวิชาแทบไม่เปลี่ยน แต่หน้าสมัครเรียกทุกครั้งที่โหลด (คนเข้าหลักพันพร้อมกัน)
+// cache ในหน่วยความจำ TTL สั้น ๆ → 2000 requests เหมือนกันเหลือ query DB จริงครั้งเดียว
+var schoolsCache struct {
+	mu      sync.RWMutex
+	data    []model.School
+	expires time.Time
+}
+
+const schoolsCacheTTL = 5 * time.Minute
 
 type WBWAdminHandler struct {
 	service *service.WBWAdminService
@@ -40,12 +52,35 @@ func intParam(r *http.Request, key string) (int, error) {
 /* ---------- schools / dashboard / groups / logs ---------- */
 
 func (h *WBWAdminHandler) ListSchools(w http.ResponseWriter, r *http.Request) {
+	// Cache-Control ให้ CDN/เบราว์เซอร์ cache ต่อได้อีกชั้น (ย้ายขึ้น Cloudflare ทีหลัง)
+	w.Header().Set("Cache-Control", "public, max-age=300")
+
+	// อ่านจาก cache ในหน่วยความจำก่อน (กัน DB โดนถล่มด้วย query เดียวกันหลักพันครั้ง)
+	schoolsCache.mu.RLock()
+	cached, fresh := schoolsCache.data, time.Now().Before(schoolsCache.expires)
+	schoolsCache.mu.RUnlock()
+	if fresh && cached != nil {
+		middleware.WriteJSON(w, http.StatusOK, cached)
+		return
+	}
+
 	schools, err := h.service.ListSchools(r.Context())
 	if err != nil {
+		// DB ล่ม แต่มี cache เก่าค้างอยู่ → เสิร์ฟของเก่าไปก่อน ดีกว่าพัง
+		if cached != nil {
+			middleware.WriteJSON(w, http.StatusOK, cached)
+			return
+		}
 		slog.Error("list schools failed", "err", err)
 		middleware.WriteError(w, http.StatusInternalServerError, "โหลดรายชื่อสำนักวิชาไม่ได้")
 		return
 	}
+
+	schoolsCache.mu.Lock()
+	schoolsCache.data = schools
+	schoolsCache.expires = time.Now().Add(schoolsCacheTTL)
+	schoolsCache.mu.Unlock()
+
 	middleware.WriteJSON(w, http.StatusOK, schools)
 }
 
@@ -89,6 +124,29 @@ func (h *WBWAdminHandler) ListParticipants(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	middleware.WriteJSON(w, http.StatusOK, list)
+}
+
+// Me — โปรไฟล์ของ "ผู้เข้าร่วมที่ล็อกอินอยู่" (อ่านของตัวเองเท่านั้น)
+//
+// ใช้ query เดียวกับ ParticipantDetail ของ admin แต่ล็อก id ไว้ที่ sub ของ token
+// จึงดึงได้แค่ของตัวเอง · เปิดให้ทุกคนที่ล็อกอิน (requireAuth) ไม่ใช่เฉพาะ admin
+// query กรอง role = 'participant' อยู่แล้ว staff/admin เรียกจะได้ 404 (ใช้ /dashboard แทน)
+func (h *WBWAdminHandler) Me(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.ClaimsFrom(r.Context())
+	if claims == nil {
+		middleware.WriteError(w, http.StatusUnauthorized, "ต้องล็อกอินก่อน")
+		return
+	}
+	d, err := h.service.ParticipantDetail(r.Context(), claims.Subject)
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		middleware.WriteError(w, http.StatusNotFound, "ไม่พบข้อมูลผู้เข้าร่วม")
+	case err != nil:
+		slog.Error("me detail failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "โหลดข้อมูลไม่สำเร็จ")
+	default:
+		middleware.WriteJSON(w, http.StatusOK, d)
+	}
 }
 
 func (h *WBWAdminHandler) ParticipantDetail(w http.ResponseWriter, r *http.Request) {

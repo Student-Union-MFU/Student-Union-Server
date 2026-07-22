@@ -31,6 +31,10 @@ func (s *WBWNotificationService) ListForUser(ctx context.Context, userID string)
 	return s.repo.ListForUser(ctx, userID)
 }
 
+func (s *WBWNotificationService) ListPublic(ctx context.Context) ([]model.NotificationPublic, error) {
+	return s.repo.ListPublic(ctx)
+}
+
 func (s *WBWNotificationService) GetDraft(ctx context.Context, userID string) (*model.Preset, error) {
 	return s.repo.GetDraft(ctx, userID)
 }

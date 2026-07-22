@@ -148,6 +148,7 @@ type StaffRef struct {
 type Checkpoint struct {
 	ID       int        `json:"id"`
 	Name     string     `json:"name"`
+	NameEn   *string    `json:"name_en"`
 	Type     string     `json:"type"`
 	Sequence *int       `json:"sequence"`
 	Staff    []StaffRef `json:"staff"`
@@ -155,10 +156,11 @@ type Checkpoint struct {
 
 // CheckpointPatched — response ของ PATCH ไม่มี key staff (ตามของเดิม)
 type CheckpointPatched struct {
-	ID       int    `json:"id"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Sequence *int   `json:"sequence"`
+	ID       int     `json:"id"`
+	Name     string  `json:"name"`
+	NameEn   *string `json:"name_en"`
+	Type     string  `json:"type"`
+	Sequence *int    `json:"sequence"`
 }
 
 // BaseStaffRef ใช้ {id,name} ไม่ใช่ {id,username,display_name} (ตาม /admin/bases-overview เดิม)
@@ -168,12 +170,14 @@ type BaseStaffRef struct {
 }
 
 type BaseOverview struct {
-	ID           int            `json:"id"`
-	Name         string         `json:"name"`
-	Sequence     *int           `json:"sequence"`
-	ActivityName *string        `json:"activity_name"`
-	CheckinCount int            `json:"checkin_count"`
-	Staff        []BaseStaffRef `json:"staff"`
+	ID             int            `json:"id"`
+	Name           string         `json:"name"`
+	NameEn         *string        `json:"name_en"`
+	Sequence       *int           `json:"sequence"`
+	ActivityName   *string        `json:"activity_name"`
+	ActivityNameEn *string        `json:"activity_name_en"`
+	CheckinCount   int            `json:"checkin_count"`
+	Staff          []BaseStaffRef `json:"staff"`
 }
 
 type AdminUser struct {
@@ -214,6 +218,19 @@ type Notification struct {
 	CreatedAt  string  `json:"created_at"`
 	ExpiresAt  *string `json:"expires_at"`
 	ReadAt     *string `json:"read_at,omitempty"`
+}
+
+// NotificationPublic — ประกาศสาธารณะ (audience='all') สำหรับหน้า /announcements
+// ที่เปิดดูได้โดยไม่ต้องล็อกอิน · ไม่มีข้อมูลผู้รับ/การอ่าน (เป็นของ staff เท่านั้น)
+type NotificationPublic struct {
+	ID          int64   `json:"id"`
+	Type        string  `json:"type"`
+	Title       string  `json:"title"`
+	Body        *string `json:"body"`
+	Level       string  `json:"level"`
+	CreatedAt   string  `json:"created_at"`
+	ExpiresAt   *string `json:"expires_at"`
+	CreatorName *string `json:"creator_name"`
 }
 
 // NotificationSent — delivered_count/read_count เป็น string เพราะของเดิม (node-pg)
@@ -287,6 +304,7 @@ type PasswordRequest struct {
 
 type CheckpointRequest struct {
 	Name     *string `json:"name"`
+	NameEn   *string `json:"name_en"`
 	Type     *string `json:"type"`
 	Sequence *int    `json:"sequence"`
 }

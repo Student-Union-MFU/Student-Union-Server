@@ -100,6 +100,35 @@ func (r *WBWNotificationRepository) ListForUser(ctx context.Context, userID stri
 	return list, rows.Err()
 }
 
+// ListPublic — ประกาศสาธารณะ (audience='all') ที่ยังไม่หมดอายุ · ไม่ต้องล็อกอิน
+// หน้า /announcements ที่เปิดดูได้ทั่วไปใช้อันนี้ (targeted ยังต้องล็อกอินผ่าน ListForUser)
+func (r *WBWNotificationRepository) ListPublic(ctx context.Context) ([]model.NotificationPublic, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT n.id, n.type, n.title, n.body, n.level::text,
+		       n.created_at::text, n.expires_at::text,
+		       COALESCE(u.display_name, u.username) AS creator_name
+		  FROM notification n
+		  LEFT JOIN app_user u ON u.user_id = n.created_by
+		 WHERE n.audience = 'all'
+		   AND (n.expires_at IS NULL OR n.expires_at > now())
+		 ORDER BY n.created_at DESC LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list := []model.NotificationPublic{}
+	for rows.Next() {
+		var n model.NotificationPublic
+		if err := rows.Scan(&n.ID, &n.Type, &n.Title, &n.Body, &n.Level,
+			&n.CreatedAt, &n.ExpiresAt, &n.CreatorName); err != nil {
+			return nil, err
+		}
+		list = append(list, n)
+	}
+	return list, rows.Err()
+}
+
 /* ---------- draft / preset (ตาราง notification_preset ร่วมกัน แยกด้วย kind) ---------- */
 
 const presetSelect = `id, kind, name, title, body, level, audience, audience_id,
