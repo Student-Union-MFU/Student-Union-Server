@@ -26,6 +26,26 @@ services:
     depends_on:
       - backend
 
+  # One-shot: applies db/migrations against the DB, then exits. Runs the same
+  # golang-migrate files as `make migrate-up`, so schema_migrations stays in
+  # sync whether you migrate by hand or via compose. Reaches Postgres by its
+  # compose service name ("database") over the shared network. On a fully
+  # migrated DB it prints "no change" and exits 0, so it is safe every boot.
+  migrate:
+    image: migrate/migrate:latest
+    container_name: su-migrate
+    restart: "no"
+    volumes:
+      - ./db/migrations:/migrations
+    command:
+      - -path=/migrations
+      - -database
+      - postgres://${DB_USER}:${DB_PASS}@database:5432/${DB_NAME}?sslmode=disable
+      - up
+    depends_on:
+      database:
+        condition: service_healthy
+
   backend:
     build: .
     container_name: su-server
@@ -45,6 +65,10 @@ services:
     depends_on:
       database:
         condition: service_healthy
+      # Wait for migrations to finish (exit 0) before the backend starts, so it
+      # never boots against a half-built schema.
+      migrate:
+        condition: service_completed_successfully
     develop:
       watch:
         - path: .
