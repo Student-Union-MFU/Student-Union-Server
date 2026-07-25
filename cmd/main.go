@@ -32,10 +32,10 @@ func main() {
 
 	godotenv.Load()
 
-    r := chi.NewRouter()
-    
+	r := chi.NewRouter()
+
 	r.Use(middleware.Logger)
-    r.Use(middleware.Recoverer)
+	r.Use(middleware.Recoverer)
 
 	// Origins differ per way in: localhost when web-next runs on this box, a
 	// LAN address when it runs on another laptop on the same network, and a
@@ -65,10 +65,10 @@ func main() {
 
 	db, err := config.ConnectDB()
 	if err != nil {
-    	slog.Error("DB connection failed:", "err", err)
+		slog.Error("DB connection failed:", "err", err)
 	} else {
 		slog.Info("DB CONNECTED")
-	}	
+	}
 
 	eventRepository := repository.NewEventRepository(db)
 	eventService := service.NewEventService(eventRepository)
@@ -121,10 +121,10 @@ func main() {
 	requireAdmin := appmw.RequireRole("admin")
 	requireStaff := appmw.RequireRole("admin", "staff")
 
-    r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"message": "SU Backend running"}`))
-    })
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"message": "SU Backend running"}`))
+	})
 
 	r.Route("/su-server", func(r chi.Router) {
 		r.Route("/events", func(r chi.Router) {
@@ -179,6 +179,8 @@ func main() {
 			))
 			r.Post("/register", wbwAuthHandler.Register)
 			r.Post("/login", wbwAuthHandler.Login)
+			// เจ้าหน้าที่สมัครเอง — สร้างบัญชี pending รอแอดมินอนุมัติ (throttle เดียวกับ auth)
+			r.Post("/staff-register", wbwAuthHandler.RegisterStaff)
 		})
 
 		r.Route("/admin", func(r chi.Router) {
@@ -215,6 +217,13 @@ func main() {
 					r.Patch("/{id}", wbwAdminHandler.UpdateUser)
 					r.Post("/{id}/password", wbwAdminHandler.SetUserPassword)
 					r.Delete("/{id}", wbwAdminHandler.DeleteUser)
+				})
+
+				// คำขอเป็นเจ้าหน้าที่ (สมัครเอง รออนุมัติ)
+				r.Route("/staff-requests", func(r chi.Router) {
+					r.Get("/", wbwAdminHandler.ListStaffRequests)
+					r.Post("/{id}/approve", wbwAdminHandler.ApproveStaff)
+					r.Post("/{id}/reject", wbwAdminHandler.RejectStaff)
 				})
 			})
 		})

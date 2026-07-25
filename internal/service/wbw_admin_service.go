@@ -211,6 +211,20 @@ func (s *WBWAdminService) DeleteUser(ctx context.Context, id, callerID string) (
 	return s.cp.DeleteUser(ctx, id)
 }
 
+/* ---------- staff requests (สมัครเอง รออนุมัติ) ---------- */
+
+func (s *WBWAdminService) ListStaffRequests(ctx context.Context) ([]model.StaffRequest, error) {
+	return s.cp.ListStaffRequests(ctx)
+}
+
+func (s *WBWAdminService) ApproveStaff(ctx context.Context, id string) (string, error) {
+	return s.cp.ApproveStaffRequest(ctx, id)
+}
+
+func (s *WBWAdminService) RejectStaff(ctx context.Context, id string) (string, error) {
+	return s.cp.RejectStaffRequest(ctx, id)
+}
+
 func isValidCheckpointType(t string) bool {
 	for _, v := range validCheckpointTypes {
 		if v == t {

@@ -54,6 +54,23 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
+// StaffRegisterRequest — เจ้าหน้าที่สมัครเอง (ต้องรอแอดมินอนุมัติ)
+type StaffRegisterRequest struct {
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	DisplayName string `json:"display_name"`
+}
+
+// StaffRequest — คำขอเป็นเจ้าหน้าที่ที่ยังรออนุมัติ (แสดงในแผงผู้ดูแล)
+type StaffRequest struct {
+	ID          string  `json:"id"`
+	Username    string  `json:"username"`
+	Role        string  `json:"role"`
+	DisplayName *string `json:"display_name"`
+	Status      string  `json:"status"`
+	Created     *string `json:"created"`
+}
+
 /* ---------- admin ---------- */
 
 type School struct {
@@ -62,29 +79,29 @@ type School struct {
 }
 
 type DashboardStats struct {
-	Participants   int `json:"participants"`
-	TotalCheckins  int `json:"total_checkins"`
-	OpenSOS        int `json:"open_sos"`
-	FullGroups     int `json:"full_groups"`
+	Participants  int `json:"participants"`
+	TotalCheckins int `json:"total_checkins"`
+	OpenSOS       int `json:"open_sos"`
+	FullGroups    int `json:"full_groups"`
 }
 
 // Participant คือ PARTICIPANT_SELECT ของ Express — สังเกต alias: id/bib/created
 type Participant struct {
-	ID           string   `json:"id"`
-	StudentID    *string  `json:"student_id"`
-	Created      *string  `json:"created"`
-	Bib          *int     `json:"bib"`
-	FirstName    *string  `json:"first_name"`
-	LastName     *string  `json:"last_name"`
-	ContactPhone *string  `json:"contact_phone"`
-	SchoolID     *int     `json:"school_id"`
-	SchoolName   *string  `json:"school_name"`
-	Major        *string  `json:"major"`
-	Sex          *string  `json:"sex"`
-	GroupID      *int     `json:"group_id"`
-	GroupNumber  *int     `json:"group_number"`
-	CheckedIn    bool     `json:"checked_in"`
-	BloodType    *string  `json:"blood_type"`
+	ID           string  `json:"id"`
+	StudentID    *string `json:"student_id"`
+	Created      *string `json:"created"`
+	Bib          *int    `json:"bib"`
+	FirstName    *string `json:"first_name"`
+	LastName     *string `json:"last_name"`
+	ContactPhone *string `json:"contact_phone"`
+	SchoolID     *int    `json:"school_id"`
+	SchoolName   *string `json:"school_name"`
+	Major        *string `json:"major"`
+	Sex          *string `json:"sex"`
+	GroupID      *int    `json:"group_id"`
+	GroupNumber  *int    `json:"group_number"`
+	CheckedIn    bool    `json:"checked_in"`
+	BloodType    *string `json:"blood_type"`
 }
 
 type ParticipantDetail struct {

@@ -157,9 +157,10 @@ func (r *WBWCheckpointRepository) RemoveStaff(ctx context.Context, checkpointID 
 /* ---------- staff / admin accounts ---------- */
 
 func (r *WBWCheckpointRepository) ListUsers(ctx context.Context) ([]model.AdminUser, error) {
+	// เฉพาะบัญชีที่อนุมัติแล้ว — ที่ยัง pending อยู่ในแท็บ "คำขอเจ้าหน้าที่" แทน
 	rows, err := r.db.Query(ctx, `
 		SELECT user_id::text, username, role::text, display_name, created_at::text
-		  FROM app_user WHERE role IN ('staff','admin')
+		  FROM app_user WHERE role IN ('staff','admin') AND status = 'approved'
 		 ORDER BY role, username`)
 	if err != nil {
 		return nil, err
@@ -229,6 +230,57 @@ func (r *WBWCheckpointRepository) DeleteUser(ctx context.Context, id string) (st
 	var username string
 	err := r.db.QueryRow(ctx,
 		`DELETE FROM app_user WHERE user_id = $1 AND role IN ('staff','admin') RETURNING username`, id).Scan(&username)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return username, err
+}
+
+/* ---------- staff requests (สมัครเอง รออนุมัติ) ---------- */
+
+// ListStaffRequests คืนเฉพาะบัญชี staff ที่สถานะ 'pending'
+func (r *WBWCheckpointRepository) ListStaffRequests(ctx context.Context) ([]model.StaffRequest, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT user_id::text, username, role::text, display_name, status::text, created_at::text
+		  FROM app_user
+		 WHERE role IN ('staff','admin') AND status = 'pending'
+		 ORDER BY created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	reqs := []model.StaffRequest{}
+	for rows.Next() {
+		var s model.StaffRequest
+		if err := rows.Scan(&s.ID, &s.Username, &s.Role, &s.DisplayName, &s.Status, &s.Created); err != nil {
+			return nil, err
+		}
+		reqs = append(reqs, s)
+	}
+	return reqs, rows.Err()
+}
+
+// ApproveStaffRequest เปลี่ยนสถานะเป็น 'approved' (เฉพาะที่ยัง pending) คืน username ไว้ log
+func (r *WBWCheckpointRepository) ApproveStaffRequest(ctx context.Context, id string) (string, error) {
+	var username string
+	err := r.db.QueryRow(ctx,
+		`UPDATE app_user SET status = 'approved'
+		 WHERE user_id = $1 AND role IN ('staff','admin') AND status = 'pending'
+		 RETURNING username`, id).Scan(&username)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return username, err
+}
+
+// RejectStaffRequest ลบบัญชีที่ยัง pending ทิ้ง (ปฏิเสธ = คืน username ให้สมัครใหม่ได้)
+func (r *WBWCheckpointRepository) RejectStaffRequest(ctx context.Context, id string) (string, error) {
+	var username string
+	err := r.db.QueryRow(ctx,
+		`DELETE FROM app_user
+		 WHERE user_id = $1 AND role IN ('staff','admin') AND status = 'pending'
+		 RETURNING username`, id).Scan(&username)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}

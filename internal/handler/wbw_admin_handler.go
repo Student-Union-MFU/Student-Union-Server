@@ -495,6 +495,52 @@ func (h *WBWAdminHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+/* ---------- staff requests (สมัครเอง รออนุมัติ) ---------- */
+
+func (h *WBWAdminHandler) ListStaffRequests(w http.ResponseWriter, r *http.Request) {
+	reqs, err := h.service.ListStaffRequests(r.Context())
+	if err != nil {
+		slog.Error("list staff requests failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "โหลดคำขอไม่สำเร็จ")
+		return
+	}
+	middleware.WriteJSON(w, http.StatusOK, reqs)
+}
+
+func (h *WBWAdminHandler) ApproveStaff(w http.ResponseWriter, r *http.Request) {
+	username, err := h.service.ApproveStaff(r.Context(), chi.URLParam(r, "id"))
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		middleware.WriteError(w, http.StatusNotFound, "ไม่พบคำขอ (อาจถูกดำเนินการไปแล้ว)")
+	case repository.IsPGCode(err, "22P02"):
+		middleware.WriteError(w, http.StatusBadRequest, "id ไม่ถูกต้อง")
+	case err != nil:
+		slog.Error("approve staff failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "อนุมัติไม่สำเร็จ")
+	default:
+		aid, aname := actor(r)
+		h.service.Log(r.Context(), aid, aname, "อนุมัติเจ้าหน้าที่", username)
+		middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+func (h *WBWAdminHandler) RejectStaff(w http.ResponseWriter, r *http.Request) {
+	username, err := h.service.RejectStaff(r.Context(), chi.URLParam(r, "id"))
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		middleware.WriteError(w, http.StatusNotFound, "ไม่พบคำขอ (อาจถูกดำเนินการไปแล้ว)")
+	case repository.IsPGCode(err, "22P02"):
+		middleware.WriteError(w, http.StatusBadRequest, "id ไม่ถูกต้อง")
+	case err != nil:
+		slog.Error("reject staff failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "ปฏิเสธไม่สำเร็จ")
+	default:
+		aid, aname := actor(r)
+		h.service.Log(r.Context(), aid, aname, "ปฏิเสธคำขอเจ้าหน้าที่", username)
+		middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
 func derefStr(p *string) string {
 	if p == nil {
 		return ""

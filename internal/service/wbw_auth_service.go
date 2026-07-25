@@ -14,12 +14,13 @@ import (
 
 // ข้อผิดพลาดเชิงธุรกิจ — handler แปลงเป็น status + ข้อความไทย
 var (
-	ErrBadStudentID   = errors.New("bad student id")
-	ErrShortPassword  = errors.New("short password")
-	ErrHasChronic     = errors.New("has chronic condition")
-	ErrDuplicateUser  = errors.New("duplicate user")
-	ErrBadCredentials = errors.New("bad credentials")
-	ErrMissingFields  = errors.New("missing fields")
+	ErrBadStudentID    = errors.New("bad student id")
+	ErrShortPassword   = errors.New("short password")
+	ErrHasChronic      = errors.New("has chronic condition")
+	ErrDuplicateUser   = errors.New("duplicate user")
+	ErrBadCredentials  = errors.New("bad credentials")
+	ErrMissingFields   = errors.New("missing fields")
+	ErrPendingApproval = errors.New("pending approval")
 )
 
 // นักศึกษาชั้นปีที่ 1 — 10 หลัก ขึ้นต้น 693
@@ -83,12 +84,40 @@ func (s *WBWAuthService) Register(ctx context.Context, req model.RegisterRequest
 	return &model.AuthResponse{User: *user, Token: token}, nil
 }
 
+// RegisterStaff สมัครเป็นเจ้าหน้าที่ — สร้างบัญชีสถานะ pending ไม่คืน token
+// (ล็อกอินไม่ได้จนกว่าแอดมินจะอนุมัติ)
+func (s *WBWAuthService) RegisterStaff(ctx context.Context, req model.StaffRegisterRequest) (*model.AuthUser, error) {
+	username := strings.TrimSpace(req.Username)
+	if username == "" {
+		return nil, ErrMissingFields
+	}
+	if len(req.Password) < 8 {
+		return nil, ErrShortPassword
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
+	if err != nil {
+		return nil, err
+	}
+	var displayName *string
+	if d := strings.TrimSpace(req.DisplayName); d != "" {
+		displayName = &d
+	}
+	user, err := s.repo.RegisterStaff(ctx, username, string(hash), displayName)
+	if err != nil {
+		if errors.Is(err, repository.ErrDuplicate) {
+			return nil, ErrDuplicateUser
+		}
+		return nil, err
+	}
+	return user, nil
+}
+
 func (s *WBWAuthService) Login(ctx context.Context, req model.LoginRequest) (*model.AuthResponse, error) {
 	if req.Username == "" || req.Password == "" {
 		return nil, ErrMissingFields
 	}
 
-	user, hash, err := s.repo.FindByUsername(ctx, req.Username)
+	user, hash, status, err := s.repo.FindByUsername(ctx, req.Username)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +127,11 @@ func (s *WBWAuthService) Login(ctx context.Context, req model.LoginRequest) (*mo
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil {
 		return nil, ErrBadCredentials
+	}
+	// staff ที่สมัครเองแต่ยังไม่ได้รับอนุมัติ ล็อกอินไม่ได้
+	// (participant + บัญชีที่แอดมินสร้างเอง เป็น 'approved' อยู่แล้ว จึงผ่านหมด)
+	if status != "approved" {
+		return nil, ErrPendingApproval
 	}
 
 	token, err := s.tokens.Sign(user.UserID, user.Role, user.Username)

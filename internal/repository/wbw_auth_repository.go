@@ -113,21 +113,39 @@ func (r *WBWAuthRepository) Register(
 	return &user, nil
 }
 
-// FindByUsername คืน user + hash สำหรับตรวจรหัสผ่าน
-func (r *WBWAuthRepository) FindByUsername(ctx context.Context, username string) (*model.AuthUser, string, error) {
+// FindByUsername คืน user + hash + status สำหรับตรวจรหัสผ่านและ gate การอนุมัติ
+func (r *WBWAuthRepository) FindByUsername(ctx context.Context, username string) (*model.AuthUser, string, string, error) {
 	var u model.AuthUser
-	var hash string
+	var hash, status string
 	err := r.db.QueryRow(ctx,
-		`SELECT user_id::text, username, role::text, password_hash
+		`SELECT user_id::text, username, role::text, password_hash, status::text
 		 FROM app_user WHERE username = $1`, username,
-	).Scan(&u.UserID, &u.Username, &u.Role, &hash)
+	).Scan(&u.UserID, &u.Username, &u.Role, &hash, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, "", nil // ไม่เจอ user — handler จะตอบ 401 เหมือนรหัสผิด (ไม่บอกใบ้)
+		return nil, "", "", nil // ไม่เจอ user — handler จะตอบ 401 เหมือนรหัสผิด (ไม่บอกใบ้)
 	}
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
-	return &u, hash, nil
+	return &u, hash, status, nil
+}
+
+// RegisterStaff สร้างบัญชี staff สถานะ 'pending' — ล็อกอินไม่ได้จนกว่าแอดมินจะอนุมัติ
+func (r *WBWAuthRepository) RegisterStaff(ctx context.Context, username, passwordHash string, displayName *string) (*model.AuthUser, error) {
+	var u model.AuthUser
+	err := r.db.QueryRow(ctx,
+		`INSERT INTO app_user (username, password_hash, role, status, display_name)
+		 VALUES ($1, $2, 'staff', 'pending', $3)
+		 RETURNING user_id::text, username, role::text`,
+		username, passwordHash, displayName,
+	).Scan(&u.UserID, &u.Username, &u.Role)
+	if err != nil {
+		if IsPGCode(err, "23505") {
+			return nil, ErrDuplicate
+		}
+		return nil, err
+	}
+	return &u, nil
 }
 
 func isValidSex(s string) bool {
