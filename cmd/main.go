@@ -74,6 +74,10 @@ func main() {
 	eventService := service.NewEventService(eventRepository)
 	eventHandler := handler.NewEventHandler(eventService)
 
+	boothRepository := repository.NewBoothRepository(db)
+	boothService := service.NewBoothService(boothRepository)
+	boothHandler := handler.NewBoothHandler(boothService)
+
 	userRepository := repository.NewUserRepository(db)
 	userService := service.NewUserService(userRepository)
 	userHandler := handler.NewUserHandler(userService)
@@ -133,6 +137,9 @@ func main() {
 			r.Post("/", eventHandler.CreateOneEvent)
 			r.Put("/{id}", eventHandler.UpdateOneEvent)
 			r.Delete("/{id}", eventHandler.DeleteOneEvents)
+		})
+		r.Route("/booths", func(r chi.Router) {
+			r.Get("/", boothHandler.GetAllBooths)
 		})
 		r.Route("/users", func(r chi.Router) {
 			r.Get("/{id}", userHandler.GetUserByID)
