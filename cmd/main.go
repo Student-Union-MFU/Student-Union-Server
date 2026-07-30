@@ -131,40 +131,81 @@ func main() {
 	})
 
 	r.Route("/su-server", func(r chi.Router) {
-		r.Route("/events", func(r chi.Router) {
-			r.Get("/", eventHandler.GetAllEvents)
-			r.Get("/{id}", eventHandler.GetOneEvents)
-			r.Post("/", eventHandler.CreateOneEvent)
-			r.Put("/{id}", eventHandler.UpdateOneEvent)
-			r.Delete("/{id}", eventHandler.DeleteOneEvents)
-		})
-		r.Route("/booths", func(r chi.Router) {
-			r.Get("/", boothHandler.GetAllBooths)
-		})
-		r.Route("/users", func(r chi.Router) {
-			r.Get("/{id}", userHandler.GetUserByID)
-			r.Get("/email/{email}", userHandler.GetUserByEmail)
-			r.Post("/insert", userHandler.InsertUser)
-			r.Post("/upsert", userHandler.UpsertUser)
-			r.Patch("/{id}", userHandler.UpdateUser)
-			r.Delete("/{id}", eventHandler.DeleteOneEvents)
-		})
+		// Public: the only way to obtain a token, plus the reads another
+		// client is known to call. Closing those is a following round, once
+		// the Android client's owner has confirmed what he uses.
 		r.Route("/auth", func(r chi.Router) {
 			r.Get("/google", oauthHandler.GoogleLogin)
 			r.Get("/google/callback", oauthHandler.GoogleCallback)
 			r.Post("/google/verify", oauthHandler.GoogleVerify)
 		})
+
+		r.Route("/events", func(r chi.Router) {
+			r.Get("/", eventHandler.GetAllEvents)
+			r.Get("/{id}", eventHandler.GetOneEvents)
+
+			r.Group(func(r chi.Router) {
+				r.Use(appmw.RequireSUAuth(jwtService))
+				r.Post("/", eventHandler.CreateOneEvent)
+				r.Put("/{id}", eventHandler.UpdateOneEvent)
+				r.Delete("/{id}", eventHandler.DeleteOneEvents)
+			})
+		})
+
+		r.Route("/booths", func(r chi.Router) {
+			r.Use(appmw.RequireSUAuth(jwtService))
+			r.Get("/", boothHandler.GetAllBooths)
+		})
+
+		r.Route("/users", func(r chi.Router) {
+			// Auth is attached per-route (not via r.Use on this subrouter)
+			// so that DELETE /{id} — no longer registered on any verb below —
+			// falls through to chi's native 405, instead of being intercepted
+			// by the auth middleware before chi ever gets to ask "does this
+			// verb exist here", which would answer 401 and make it look like
+			// the removed route were still guarded rather than gone. /events,
+			// /steps and /leaderboard avoid this the other way, by nesting
+			// their auth-only verbs inside an r.Group, which shares the
+			// parent's routing tree instead of wrapping the whole subrouter.
+
+			// A record that belongs to one person.
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSelfOrStaff("id")).Get("/{id}", userHandler.GetUserByID)
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSelfOrStaff("id")).Patch("/{id}", userHandler.UpdateUser)
+
+			// Ownership cannot be expressed against an email, and knowing an
+			// address should not hand over the profile behind it.
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff()).Get("/email/{email}", userHandler.GetUserByEmail)
+
+			// DELETE /{id} is gone. It pointed at eventHandler.DeleteOneEvents
+			// and deleted events; UserHandler has no delete method to re-point
+			// it at, so this was a route added with nothing behind it. Writing
+			// that handler is a different project: nothing defines what becomes
+			// of a deleted student's check-ins or step records.
+
+			r.With(appmw.RequireSUAuth(jwtService)).Post("/insert", userHandler.InsertUser)
+			r.With(appmw.RequireSUAuth(jwtService)).Post("/upsert", userHandler.UpsertUser)
+		})
+
 		r.Route("/steps", func(r chi.Router) {
 			r.Get("/{userID}", stepHandler.GetStepsByUserID)
-			r.Get("/{userID}/range?from=2026-06-01&to=2026-08-01", stepHandler.GetStepsByDateRange)
-			r.Post("/sync", stepHandler.SyncSteps)
-			r.Post("/sync/bulk", stepHandler.SyncManySteps)
+			r.Get("/{userID}/range", stepHandler.GetStepsByDateRange)
+
+			r.Group(func(r chi.Router) {
+				r.Use(appmw.RequireSUAuth(jwtService))
+				r.Post("/sync", stepHandler.SyncSteps)
+				r.Post("/sync/bulk", stepHandler.SyncManySteps)
+			})
 		})
+
 		r.Route("/leaderboard", func(r chi.Router) {
 			r.Get("/", leaderboardHandler.GetLeaderboard)
 			r.Get("/{userID}", leaderboardHandler.GetUserRank)
-			r.Post("/update", leaderboardHandler.UpdateEntry)
-			r.Post("/reset", leaderboardHandler.Reset)
+
+			r.Group(func(r chi.Router) {
+				r.Use(appmw.RequireSUAuth(jwtService))
+				r.Post("/update", leaderboardHandler.UpdateEntry)
+				r.Post("/reset", leaderboardHandler.Reset)
+			})
 		})
 	})
 
