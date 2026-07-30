@@ -4,23 +4,24 @@ import (
 	"context"
 	"su-server/internal/model"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type BoothRepository struct {
-	db *pgx.Conn
+	db *pgxpool.Pool
 }
 
-func NewBoothRepository(db *pgx.Conn) *BoothRepository {
+func NewBoothRepository(db *pgxpool.Pool) *BoothRepository {
 	return &BoothRepository{db: db}
 }
 
-// GetAllBooths returns every booth, secret included — the caller decides what
-// reaches the wire. Project C needs the secret here to verify an HMAC, which
-// is why the guard lives at the response boundary rather than in this query.
+// GetAllBooths returns every booth for the public directory. It deliberately
+// does not read the secret column — this list is served on the endpoint
+// every student hits, and the secret has no business leaving the database on
+// that path (it is only ever needed one booth at a time, to verify an HMAC).
 func (r *BoothRepository) GetAllBooths(ctx context.Context) ([]model.Booth, error) {
 	rows, err := r.db.Query(ctx,
-		"SELECT id, event_id, name, category, secret, created_at FROM booth ORDER BY id")
+		"SELECT id, event_id, name, category, created_at FROM booth ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +37,6 @@ func (r *BoothRepository) GetAllBooths(ctx context.Context) ([]model.Booth, erro
 			&booth.EventID,
 			&booth.Name,
 			&booth.Category,
-			&booth.Secret,
 			&booth.CreatedAt,
 		); err != nil {
 			return nil, err

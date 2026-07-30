@@ -70,11 +70,20 @@ func main() {
 		slog.Info("DB CONNECTED")
 	}
 
+	// ใช้ connection pool ไม่ใช่ *pgx.Conn เดี่ยว — conn เดียวไม่ปลอดภัยเมื่อมี request พร้อมกัน
+	pool, err := config.ConnectPool(context.Background())
+	if err != nil {
+		slog.Error("pool connection failed", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+	slog.Info("POOL CONNECTED")
+
 	eventRepository := repository.NewEventRepository(db)
 	eventService := service.NewEventService(eventRepository)
 	eventHandler := handler.NewEventHandler(eventService)
 
-	boothRepository := repository.NewBoothRepository(db)
+	boothRepository := repository.NewBoothRepository(pool)
 	boothService := service.NewBoothService(boothRepository)
 	boothHandler := handler.NewBoothHandler(boothService)
 
@@ -96,15 +105,6 @@ func main() {
 	leaderboardHandler := handler.NewLeaderboardHandler(leaderboardService)
 
 	// ---------- WBW (เดินรอบดอย) ----------
-	// ใช้ connection pool ไม่ใช่ *pgx.Conn เดี่ยว — conn เดียวไม่ปลอดภัยเมื่อมี request พร้อมกัน
-	pool, err := config.ConnectPool(context.Background())
-	if err != nil {
-		slog.Error("WBW pool connection failed", "err", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
-	slog.Info("WBW POOL CONNECTED")
-
 	wbwTokens := service.NewWBWTokenService()
 
 	wbwAuthRepo := repository.NewWBWAuthRepository(pool)

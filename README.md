@@ -76,6 +76,11 @@ su-server/
 | `PUT` | `/events/:id` | Update an event |
 | `DELETE` | `/events/:id` | Delete an event |
 
+### Booths
+| Method | Route | Description |
+|--------|-------|-------------|
+| `GET` | `/booths` | List all booths. `event_id` is nullable — a booth with no event assigned yet returns `event_id: null`. `secret` (the booth's check-in HMAC key) is deliberately never returned on this endpoint. |
+
 ### Users
 | Method | Route | Description |
 |--------|-------|-------------|
