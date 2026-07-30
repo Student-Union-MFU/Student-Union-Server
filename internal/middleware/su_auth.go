@@ -33,6 +33,18 @@ func RequireSUAuth(jwt *service.JWTService) func(http.Handler) http.Handler {
 				return
 			}
 
+			// A token this server minted always has a positive UserID —
+			// Generate is only ever called with a database row's id. A WBW
+			// token (or anything else foreign that happens to verify under
+			// the same secret) decodes into JWTClaims as UserID: 0, since
+			// JSON decoding silently ignores fields it doesn't recognize.
+			// Same status and message as an invalid token: the caller should
+			// not learn which check failed.
+			if claims.UserID <= 0 {
+				WriteError(w, http.StatusUnauthorized, "โทเคนไม่ถูกต้องหรือหมดอายุ")
+				return
+			}
+
 			ctx := context.WithValue(r.Context(), suClaimsKey, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

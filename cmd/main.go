@@ -145,7 +145,7 @@ func main() {
 			r.Get("/{id}", eventHandler.GetOneEvents)
 
 			r.Group(func(r chi.Router) {
-				r.Use(appmw.RequireSUAuth(jwtService))
+				r.Use(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff())
 				r.Post("/", eventHandler.CreateOneEvent)
 				r.Put("/{id}", eventHandler.UpdateOneEvent)
 				r.Delete("/{id}", eventHandler.DeleteOneEvents)
@@ -182,15 +182,24 @@ func main() {
 			// that handler is a different project: nothing defines what becomes
 			// of a deleted student's check-ins or step records.
 
-			r.With(appmw.RequireSUAuth(jwtService)).Post("/insert", userHandler.InsertUser)
-			r.With(appmw.RequireSUAuth(jwtService)).Post("/upsert", userHandler.UpsertUser)
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff()).Post("/insert", userHandler.InsertUser)
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff()).Post("/upsert", userHandler.UpsertUser)
 		})
 
 		r.Route("/steps", func(r chi.Router) {
-			r.Get("/{userID}", stepHandler.GetStepsByUserID)
-			r.Get("/{userID}/range", stepHandler.GetStepsByDateRange)
+			// A step history is a day-by-day record of where one named
+			// person was. Paired with the public leaderboard (which hands
+			// out id-to-name), a bare token would turn "anyone signed in"
+			// into "read anyone's movements" — so these require the caller
+			// to be the subject or staff, same as /users/{id}.
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSelfOrStaff("userID")).Get("/{userID}", stepHandler.GetStepsByUserID)
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSelfOrStaff("userID")).Get("/{userID}/range", stepHandler.GetStepsByDateRange)
 
 			r.Group(func(r chi.Router) {
+				// Still trusts a body-supplied user_id — see the "critical"
+				// finding above the users routes. Deriving it from claims
+				// instead means changing SyncSteps/SyncManySteps, which is
+				// a separate piece of work.
 				r.Use(appmw.RequireSUAuth(jwtService))
 				r.Post("/sync", stepHandler.SyncSteps)
 				r.Post("/sync/bulk", stepHandler.SyncManySteps)
@@ -198,11 +207,14 @@ func main() {
 		})
 
 		r.Route("/leaderboard", func(r chi.Router) {
+			// Public and deliberately left that way: a leaderboard is the
+			// campaign's front page, and far likelier to have a live caller
+			// than the routes below it.
 			r.Get("/", leaderboardHandler.GetLeaderboard)
 			r.Get("/{userID}", leaderboardHandler.GetUserRank)
 
 			r.Group(func(r chi.Router) {
-				r.Use(appmw.RequireSUAuth(jwtService))
+				r.Use(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff())
 				r.Post("/update", leaderboardHandler.UpdateEntry)
 				r.Post("/reset", leaderboardHandler.Reset)
 			})

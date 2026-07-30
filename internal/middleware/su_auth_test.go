@@ -104,6 +104,68 @@ func TestRequireSUAuthRejectsAnExpiredToken(t *testing.T) {
 	}
 }
 
+// The finding this exists for: a WBW token carries role and username but no
+// user_id, and JSON decoding silently ignores fields JWTClaims doesn't
+// recognize — so it parses into UserID: 0 with a valid signature and an
+// unexpired exp. Sign one for real, with the same secret both services read
+// from JWT_SECRET, and confirm it no longer opens an SU route.
+func TestRequireSUAuthRejectsAWBWToken(t *testing.T) {
+	jwt := newJWT(t)
+
+	wbwTokens := service.NewWBWTokenService()
+	foreign, err := wbwTokens.Sign("some-uuid", "staff", "somebody")
+	if err != nil {
+		t.Fatalf("signing the WBW token failed: %v", err)
+	}
+
+	var reached bool
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+foreign)
+	rec := httptest.NewRecorder()
+
+	RequireSUAuth(jwt)(passthrough(&reached)).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized || reached {
+		t.Errorf("got %d reached=%v, want 401 and no handler", rec.Code, reached)
+	}
+}
+
+// Same shape, minimal case: whatever produced it, UserID: 0 is never a real
+// account, so it must be rejected the same way an invalid token is — same
+// status, same message, so the caller can't tell which check failed.
+func TestRequireSUAuthRejectsAZeroUserID(t *testing.T) {
+	jwt := newJWT(t)
+	zero := tokenFor(t, jwt, 0, "student")
+
+	var reached bool
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+zero)
+	rec := httptest.NewRecorder()
+
+	RequireSUAuth(jwt)(passthrough(&reached)).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized || reached {
+		t.Errorf("got %d reached=%v, want 401 and no handler", rec.Code, reached)
+	}
+}
+
+// The other half: a real, positive user id must still pass. Guards against
+// a fix that overcorrects into rejecting every token.
+func TestRequireSUAuthPassesAPositiveUserID(t *testing.T) {
+	jwt := newJWT(t)
+	var reached bool
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenFor(t, jwt, 1, "student"))
+	rec := httptest.NewRecorder()
+
+	RequireSUAuth(jwt)(passthrough(&reached)).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !reached {
+		t.Errorf("got %d reached=%v, want 200 and the handler", rec.Code, reached)
+	}
+}
+
 func TestRequireSUAuthPassesAValidTokenAndCarriesTheClaims(t *testing.T) {
 	jwt := newJWT(t)
 	var seen *service.JWTClaims
