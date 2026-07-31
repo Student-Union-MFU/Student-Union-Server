@@ -149,6 +149,45 @@ func (h *WBWAdminHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// PatchMe PATCH /wbw/me — ผู้เข้าร่วมแก้รูปโปรไฟล์ตัวเอง
+//
+// รับเฉพาะ photo_url · ไม่มี key นี้ใน body = ไม่มีอะไรให้แก้ ตอบ 400 แทนที่จะลบรูปทิ้ง
+// (ส่ง "photo_url": null มาโดยตั้งใจ = ลบรูป ซึ่งต่างจากไม่ส่ง key มาเลย จึงต้องแยกสองกรณีนี้)
+func (h *WBWAdminHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.ClaimsFrom(r.Context())
+	if claims == nil {
+		middleware.WriteError(w, http.StatusUnauthorized, "ต้องล็อกอินก่อน")
+		return
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
+		return
+	}
+	field, ok := raw["photo_url"]
+	if !ok {
+		middleware.WriteError(w, http.StatusBadRequest, "ต้องมี photo_url")
+		return
+	}
+	var photoURL *string
+	if err := json.Unmarshal(field, &photoURL); err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "photo_url ไม่ถูกต้อง")
+		return
+	}
+
+	err := h.service.UpdateOwnPhoto(r.Context(), claims.Subject, photoURL)
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		middleware.WriteError(w, http.StatusNotFound, "ไม่พบข้อมูลผู้เข้าร่วม")
+	case err != nil:
+		slog.Error("update own photo failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "บันทึกรูปไม่สำเร็จ")
+	default:
+		middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
 func (h *WBWAdminHandler) ParticipantDetail(w http.ResponseWriter, r *http.Request) {
 	d, err := h.service.ParticipantDetail(r.Context(), chi.URLParam(r, "id"))
 	switch {

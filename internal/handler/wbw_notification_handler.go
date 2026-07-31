@@ -83,6 +83,23 @@ func (h *WBWNotificationHandler) List(w http.ResponseWriter, r *http.Request) {
 	middleware.WriteJSON(w, http.StatusOK, list)
 }
 
+// MarkRead POST /wbw/notifications/{id}/read — ผู้ใช้กดอ่านประกาศ
+func (h *WBWNotificationHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		middleware.WriteError(w, http.StatusBadRequest, "ประกาศไม่ถูกต้อง")
+		return
+	}
+	uid, _ := actor(r)
+
+	if err := h.service.MarkRead(r.Context(), uid, id); err != nil {
+		slog.Error("mark notification read failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "บันทึกสถานะอ่านไม่สำเร็จ")
+		return
+	}
+	middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // ListPublic — ประกาศสาธารณะ (audience='all') · เปิดดูได้โดยไม่ต้องล็อกอิน
 func (h *WBWNotificationHandler) ListPublic(w http.ResponseWriter, r *http.Request) {
 	list, err := h.service.ListPublic(r.Context())

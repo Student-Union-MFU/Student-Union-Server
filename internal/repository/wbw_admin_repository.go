@@ -352,6 +352,25 @@ func (r *WBWAdminRepository) ListLogs(ctx context.Context) ([]model.AdminLog, er
 	return logs, rows.Err()
 }
 
+/* ---------- โปรไฟล์ตัวเอง ---------- */
+
+// UpdateOwnPhoto — ผู้เข้าร่วมเปลี่ยนรูปโปรไฟล์ตัวเอง (PATCH /wbw/me)
+//
+// จำกัดไว้แค่ photo_url โดยตั้งใจ · ฟิลด์อื่น (กลุ่ม, BIB, สำนักวิชา) เป็นของ admin
+// เปิดให้ PATCH ทั้ง profile จากฝั่งผู้ใช้ = เขาย้ายกลุ่มตัวเองข้ามการเช็คที่นั่งได้
+func (r *WBWAdminRepository) UpdateOwnPhoto(ctx context.Context, userID string, photoURL *string) error {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE participant_profile SET photo_url = $1, updated_at = now() WHERE user_id = $2`,
+		photoURL, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // LogAction บันทึก audit — กลืน error เองเหมือนของเดิม (audit ล้มไม่ควรทำ request พัง)
 func (r *WBWAdminRepository) LogAction(ctx context.Context, actorID, actorName, action, detail string) {
 	_, _ = r.db.Exec(ctx,

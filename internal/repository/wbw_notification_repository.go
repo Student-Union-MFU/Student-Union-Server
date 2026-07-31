@@ -207,6 +207,22 @@ func (r *WBWNotificationRepository) DeletePreset(ctx context.Context, userID str
 	return err
 }
 
+// MarkRead — ผู้ใช้กดอ่านประกาศ · upsert เพราะแถวอาจยังไม่เคยถูกสร้าง
+// (notification_read สร้างตอน "ส่งถึง" ซึ่งของเดิมทำเฉพาะตอนยิง push)
+//
+// read_at ตั้งครั้งแรกแล้วไม่ทับ: เวลาที่อ่านครั้งแรกมีความหมาย ส่วนการเปิดซ้ำไม่มี
+// delivered_at เติมให้ด้วยถ้ายังว่าง — อ่านได้แปลว่าถึงเครื่องแล้วแน่นอน
+func (r *WBWNotificationRepository) MarkRead(ctx context.Context, userID string, notificationID int64) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO notification_read (notification_id, user_id, delivered_at, read_at)
+		VALUES ($1, $2, now(), now())
+		ON CONFLICT (notification_id, user_id) DO UPDATE
+		   SET read_at = COALESCE(notification_read.read_at, now()),
+		       delivered_at = COALESCE(notification_read.delivered_at, now())`,
+		notificationID, userID)
+	return err
+}
+
 func deref(p *string, fallback string) string {
 	if p == nil || *p == "" {
 		return fallback
