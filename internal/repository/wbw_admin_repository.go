@@ -125,7 +125,12 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		       COALESCE(p.checked_in, FALSE),
 		       p.emergency_contact_name, p.emergency_contact_phone,
 		       h.blood_type::text, h.weight_kg, h.height_cm,
-		       c.consent_health_data, c.consent_emergency_treatment, c.waiver_accepted
+		       c.consent_health_data, c.consent_emergency_treatment, c.waiver_accepted,
+		       -- key ที่แอป iOS ต้องการ (contract §2) · user_id/bib_number ซ้ำค่ากับ
+		       -- id/bib ที่ web-next ใช้อยู่ ตั้งใจส่งทั้งสองชื่อ ไม่เปลี่ยนของเดิม
+		       u.user_id::text, u.username, u.role,
+		       p.bib_number, p.qr_token, p.year,
+		       h.food_allergies, h.chronic_disease, h.medications
 		  FROM app_user u
 		  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 		  LEFT JOIN school            s ON s.school_id = p.school_id
@@ -138,7 +143,10 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		&d.GroupID, &d.GroupNumber, &d.PhotoURL, &d.CheckedIn,
 		&d.EmergencyContactName, &d.EmergencyContactPhone,
 		&d.BloodType, &d.WeightKg, &d.HeightCm,
-		&d.ConsentHealthData, &d.ConsentEmergencyTreatment, &d.WaiverAccepted)
+		&d.ConsentHealthData, &d.ConsentEmergencyTreatment, &d.WaiverAccepted,
+		&d.UserID, &d.Username, &d.Role,
+		&d.BibNumber, &d.QRToken, &d.Year,
+		&d.FoodAllergies, &d.ChronicDisease, &d.Medications)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

@@ -105,10 +105,21 @@ type Participant struct {
 }
 
 type ParticipantDetail struct {
-	ID                        string   `json:"id"`
-	StudentID                 *string  `json:"student_id"`
-	Created                   *string  `json:"created"`
-	Bib                       *int     `json:"bib"`
+	ID        string  `json:"id"`
+	StudentID *string `json:"student_id"`
+	Created   *string `json:"created"`
+	Bib       *int    `json:"bib"`
+
+	// แอป iOS ต้องการชื่อ key ตาม docs/backend-contract.md §2 ของ repo wbw-ios-fontend
+	// ซึ่งไม่ตรงกับที่ web-next ใช้อยู่ (id, bib) · เพิ่มเป็น key ใหม่คู่ขนานแทนที่จะ
+	// เปลี่ยนชื่อของเดิม — เปลี่ยนชื่อเมื่อไหร่ web-next พังทันที
+	// user_id/username/role เป็น field บังคับฝั่ง iOS ไม่มีแล้ว decode ไม่ผ่านทั้งก้อน
+	UserID                    string   `json:"user_id"`
+	Username                  string   `json:"username"`
+	Role                      string   `json:"role"`
+	BibNumber                 *int     `json:"bib_number"`
+	QRToken                   *string  `json:"qr_token"`
+	Year                      *int     `json:"year"`
 	FirstName                 *string  `json:"first_name"`
 	LastName                  *string  `json:"last_name"`
 	Sex                       *string  `json:"sex"`
@@ -129,6 +140,11 @@ type ParticipantDetail struct {
 	ConsentHealthData         *bool    `json:"consent_health_data"`
 	ConsentEmergencyTreatment *bool    `json:"consent_emergency_treatment"`
 	WaiverAccepted            *bool    `json:"waiver_accepted"`
+
+	// ข้อมูลสุขภาพที่ contract §2 ระบุว่า /me ต้องมี — จอโปรไฟล์ในแอปแสดงให้เจ้าตัวดู
+	FoodAllergies  *string `json:"food_allergies"`
+	ChronicDisease *string `json:"chronic_disease"`
+	Medications    *string `json:"medications"`
 }
 
 // ParticipantPatch — ทุก field เป็น pointer เพื่อแยก "ไม่ได้ส่งมา" ออกจาก "ส่งค่าว่าง"
