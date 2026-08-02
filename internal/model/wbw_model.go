@@ -400,3 +400,33 @@ type CheckinFeedback struct {
 	Comment      *string `json:"comment"`
 	CreatedAt    string  `json:"created_at"`
 }
+
+// AdminFeedbackRow — ความเห็นหนึ่งแถวสำหรับแอดมิน (ผูกชื่อผู้ตอบ ตามที่ตกลงไว้ใน spec)
+type AdminFeedbackRow struct {
+	ID             int64   `json:"id"`
+	CheckpointID   int     `json:"checkpoint_id"`
+	CheckpointName string  `json:"checkpoint_name"`
+	ActivityName   *string `json:"activity_name"`
+	ParticipantID  string  `json:"participant_id"`
+	FirstName      string  `json:"first_name"`
+	LastName       string  `json:"last_name"`
+	Bib            *int    `json:"bib"`
+	Rating         int     `json:"rating"`
+	Comment        *string `json:"comment"`
+	CreatedAt      string  `json:"created_at"`
+}
+
+// FeedbackSummary — นับคะแนนต่อฐาน
+type FeedbackSummary struct {
+	CheckpointID int    `json:"checkpoint_id"`
+	Name         string `json:"name"`
+	Dislike      int    `json:"dislike"`
+	Neutral      int    `json:"neutral"`
+	Like         int    `json:"like"`
+}
+
+// AdminFeedbackResponse — สิ่งที่ GET /wbw/admin/feedback คืน
+type AdminFeedbackResponse struct {
+	Items   []AdminFeedbackRow `json:"items"`
+	Summary []FeedbackSummary  `json:"summary"`
+}

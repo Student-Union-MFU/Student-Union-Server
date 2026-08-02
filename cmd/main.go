@@ -146,6 +146,10 @@ func main() {
 	wbwProgressService := service.NewWBWProgressService(wbwCheckpointRepo)
 	wbwProgressHandler := handler.NewWBWProgressHandler(wbwProgressService)
 
+	wbwFeedbackRepo := repository.NewWBWFeedbackRepository(pool)
+	wbwFeedbackService := service.NewWBWFeedbackService(wbwFeedbackRepo)
+	wbwFeedbackHandler := handler.NewWBWFeedbackHandler(wbwFeedbackService)
+
 	wbwDeviceService := service.NewWBWDeviceService(wbwDeviceRepo)
 	wbwDeviceHandler := handler.NewWBWDeviceHandler(wbwDeviceService)
 
@@ -282,6 +286,7 @@ func main() {
 				r.Get("/dashboard", wbwAdminHandler.Dashboard)
 				r.Get("/logs", wbwAdminHandler.ListLogs)
 				r.Get("/bases-overview", wbwAdminHandler.BasesOverview)
+				r.Get("/feedback", wbwFeedbackHandler.AdminList)
 
 				r.Route("/participants", func(r chi.Router) {
 					r.Get("/", wbwAdminHandler.ListParticipants)
@@ -323,6 +328,8 @@ func main() {
 		r.With(requireAuth).Patch("/me", wbwAdminHandler.PatchMe)
 		// ความคืบหน้าเช็คอินของตัวเอง — แอปใช้คุมขั้นต้นไม้ที่หน้า Home
 		r.With(requireAuth).Get("/me/progress", wbwProgressHandler.MyProgress)
+		// ความเห็นต่อฐาน — ผู้เข้าร่วมส่งของตัวเอง
+		r.With(requireAuth).Post("/me/feedback", wbwFeedbackHandler.Submit)
 
 		r.Route("/groups", func(r chi.Router) {
 			r.Use(requireAuth)
