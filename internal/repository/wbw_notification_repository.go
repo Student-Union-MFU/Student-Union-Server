@@ -23,15 +23,15 @@ func NewWBWNotificationRepository(db *pgxpool.Pool) *WBWNotificationRepository {
 func (r *WBWNotificationRepository) Create(ctx context.Context, n model.NotificationRequest, createdBy string) (*model.Notification, error) {
 	var out model.Notification
 	err := r.db.QueryRow(ctx, `
-		INSERT INTO notification (type, title, body, level, audience, audience_id, created_by, expires_at)
-		VALUES ($1, $2, $3, $4::noti_level, $5::audience_type, $6, $7, $8::timestamptz)
-		RETURNING id, type, title, body, level::text, audience::text, audience_id,
+		INSERT INTO notification (type, title, body, level, audience, audience_id, ref_id, created_by, expires_at)
+		VALUES ($1, $2, $3, $4::noti_level, $5::audience_type, $6, $7, $8, $9::timestamptz)
+		RETURNING id, type, title, body, level::text, audience::text, audience_id, ref_id,
 		          created_by::text, created_at::text, expires_at::text`,
 		deref(n.Type, "announcement"), n.Title, n.Body,
-		deref(n.Level, "info"), deref(n.Audience, "all"), n.AudienceID,
+		deref(n.Level, "info"), deref(n.Audience, "all"), n.AudienceID, n.RefID,
 		createdBy, n.ExpiresAt,
 	).Scan(&out.ID, &out.Type, &out.Title, &out.Body, &out.Level, &out.Audience,
-		&out.AudienceID, &out.CreatedBy, &out.CreatedAt, &out.ExpiresAt)
+		&out.AudienceID, &out.RefID, &out.CreatedBy, &out.CreatedAt, &out.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func (r *WBWNotificationRepository) Create(ctx context.Context, n model.Notifica
 // ListSent — delivered_count/read_count คืนเป็น string เพื่อให้ตรงกับของเดิม (node-pg ส่ง count เป็น string)
 func (r *WBWNotificationRepository) ListSent(ctx context.Context) ([]model.NotificationSent, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT n.id, n.type, n.title, n.body, n.level::text, n.audience::text, n.audience_id,
+		SELECT n.id, n.type, n.title, n.body, n.level::text, n.audience::text, n.audience_id, n.ref_id,
 		       n.created_at::text, n.expires_at::text,
 		       COALESCE(u.display_name, u.username) AS creator_name,
 		       (SELECT count(*) FROM notification_read nr
@@ -60,7 +60,7 @@ func (r *WBWNotificationRepository) ListSent(ctx context.Context) ([]model.Notif
 	for rows.Next() {
 		var n model.NotificationSent
 		if err := rows.Scan(&n.ID, &n.Type, &n.Title, &n.Body, &n.Level, &n.Audience,
-			&n.AudienceID, &n.CreatedAt, &n.ExpiresAt, &n.CreatorName,
+			&n.AudienceID, &n.RefID, &n.CreatedAt, &n.ExpiresAt, &n.CreatorName,
 			&n.DeliveredCount, &n.ReadCount); err != nil {
 			return nil, err
 		}
@@ -72,7 +72,7 @@ func (r *WBWNotificationRepository) ListSent(ctx context.Context) ([]model.Notif
 // ListForUser กรองตาม audience ของผู้เรียก (staff/admin ไม่มี profile จึงเห็นแค่ all กับ user)
 func (r *WBWNotificationRepository) ListForUser(ctx context.Context, userID string) ([]model.Notification, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT n.id, n.type, n.title, n.body, n.level::text, n.audience::text, n.audience_id,
+		SELECT n.id, n.type, n.title, n.body, n.level::text, n.audience::text, n.audience_id, n.ref_id,
 		       n.created_by::text, n.created_at::text, n.expires_at::text, nr.read_at::text
 		  FROM notification n
 		  LEFT JOIN participant_profile p ON p.user_id = $1
@@ -92,7 +92,7 @@ func (r *WBWNotificationRepository) ListForUser(ctx context.Context, userID stri
 	for rows.Next() {
 		var n model.Notification
 		if err := rows.Scan(&n.ID, &n.Type, &n.Title, &n.Body, &n.Level, &n.Audience,
-			&n.AudienceID, &n.CreatedBy, &n.CreatedAt, &n.ExpiresAt, &n.ReadAt); err != nil {
+			&n.AudienceID, &n.RefID, &n.CreatedBy, &n.CreatedAt, &n.ExpiresAt, &n.ReadAt); err != nil {
 			return nil, err
 		}
 		list = append(list, n)
@@ -104,7 +104,7 @@ func (r *WBWNotificationRepository) ListForUser(ctx context.Context, userID stri
 // หน้า /announcements ที่เปิดดูได้ทั่วไปใช้อันนี้ (targeted ยังต้องล็อกอินผ่าน ListForUser)
 func (r *WBWNotificationRepository) ListPublic(ctx context.Context) ([]model.NotificationPublic, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT n.id, n.type, n.title, n.body, n.level::text,
+		SELECT n.id, n.type, n.title, n.body, n.level::text, n.ref_id,
 		       n.created_at::text, n.expires_at::text,
 		       COALESCE(u.display_name, u.username) AS creator_name
 		  FROM notification n
@@ -120,7 +120,7 @@ func (r *WBWNotificationRepository) ListPublic(ctx context.Context) ([]model.Not
 	list := []model.NotificationPublic{}
 	for rows.Next() {
 		var n model.NotificationPublic
-		if err := rows.Scan(&n.ID, &n.Type, &n.Title, &n.Body, &n.Level,
+		if err := rows.Scan(&n.ID, &n.Type, &n.Title, &n.Body, &n.Level, &n.RefID,
 			&n.CreatedAt, &n.ExpiresAt, &n.CreatorName); err != nil {
 			return nil, err
 		}

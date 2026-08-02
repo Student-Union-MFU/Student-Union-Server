@@ -247,10 +247,13 @@ type Notification struct {
 	Level      string  `json:"level"`
 	Audience   string  `json:"audience"`
 	AudienceID *string `json:"audience_id"`
-	CreatedBy  *string `json:"created_by"`
-	CreatedAt  string  `json:"created_at"`
-	ExpiresAt  *string `json:"expires_at"`
-	ReadAt     *string `json:"read_at,omitempty"`
+	// RefID ชี้ไปแถวที่แจ้งเตือนนี้พูดถึง (เช่น checkpoint_id ของ checkin_feedback) —
+	// ไม่มี omitempty เพราะแอปต้องเจอคีย์นี้เสมอแม้เป็น null ไม่งั้น decode ฝั่ง iOS พังตอน key หาย
+	RefID     *string `json:"ref_id"`
+	CreatedBy *string `json:"created_by"`
+	CreatedAt string  `json:"created_at"`
+	ExpiresAt *string `json:"expires_at"`
+	ReadAt    *string `json:"read_at,omitempty"`
 }
 
 // NotificationPublic — ประกาศสาธารณะ (audience='all') สำหรับหน้า /announcements
@@ -261,6 +264,7 @@ type NotificationPublic struct {
 	Title       string  `json:"title"`
 	Body        *string `json:"body"`
 	Level       string  `json:"level"`
+	RefID       *string `json:"ref_id"`
 	CreatedAt   string  `json:"created_at"`
 	ExpiresAt   *string `json:"expires_at"`
 	CreatorName *string `json:"creator_name"`
@@ -276,6 +280,7 @@ type NotificationSent struct {
 	Level          string  `json:"level"`
 	Audience       string  `json:"audience"`
 	AudienceID     *string `json:"audience_id"`
+	RefID          *string `json:"ref_id"`
 	CreatedAt      string  `json:"created_at"`
 	ExpiresAt      *string `json:"expires_at"`
 	CreatorName    *string `json:"creator_name"`
@@ -290,6 +295,7 @@ type NotificationRequest struct {
 	Level      *string `json:"level"`
 	Audience   *string `json:"audience"`
 	AudienceID *string `json:"audience_id"`
+	RefID      *string `json:"ref_id"`
 	ExpiresAt  *string `json:"expires_at"`
 }
 
@@ -363,4 +369,27 @@ type CheckinProgressItem struct {
 type CheckinProgress struct {
 	Total     int                   `json:"total"`
 	CheckedIn []CheckinProgressItem `json:"checked_in"`
+}
+
+/* ---------- ความเห็นต่อฐาน ---------- */
+
+// FeedbackRequest — สิ่งที่แอปส่งมาตอนกดส่งความเห็น
+//
+// ClientID ทำให้ส่งซ้ำตอนเน็ตหลุดไม่เกิดแถวซ้ำ (unique ใน DB) — แอปสร้างเองก่อนยิง
+// และใช้ค่าเดิมทุกครั้งที่ retry
+type FeedbackRequest struct {
+	ClientID     string  `json:"client_id"`
+	CheckpointID int     `json:"checkpoint_id"`
+	Rating       int     `json:"rating"` // 1 ไม่ชอบ · 2 เฉยๆ · 3 ชอบ
+	Comment      *string `json:"comment"`
+	DeviceTime   string  `json:"device_time"`
+}
+
+// CheckinFeedback — ความเห็นหนึ่งอันที่บันทึกแล้ว
+type CheckinFeedback struct {
+	ID           int64   `json:"id"`
+	CheckpointID int     `json:"checkpoint_id"`
+	Rating       int     `json:"rating"`
+	Comment      *string `json:"comment"`
+	CreatedAt    string  `json:"created_at"`
 }
