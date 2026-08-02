@@ -84,3 +84,32 @@ func TestCheckinProgressItemKeepsTheFieldsTheClientNeeds(t *testing.T) {
 		}
 	}
 }
+
+// ฐานที่ยังไม่ตอบต้องส่ง answered=false พร้อม rating/comment เป็น null ไม่ใช่คีย์หาย —
+// แอปแยก "ยังไม่ตอบ" กับ "ตอบแล้ว" จากคีย์นี้
+func TestProgressItemCarriesFeedbackKeysWhenUnanswered(t *testing.T) {
+	out, err := json.Marshal(CheckinProgressItem{CheckpointID: 1, Name: "ฐาน", At: "t"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"answered":false`, `"rating":null`, `"comment":null`, `"activity_name":null`} {
+		if !strings.Contains(string(out), key) {
+			t.Fatalf("expected %s in %s", key, out)
+		}
+	}
+}
+
+func TestProgressItemCarriesAnswerWhenAnswered(t *testing.T) {
+	rating := 3
+	comment := "ดีมาก"
+	activity := "ปลูกป่า"
+	out, _ := json.Marshal(CheckinProgressItem{
+		CheckpointID: 5, Name: "จุดปลูก", ActivityName: &activity, At: "t",
+		Answered: true, Rating: &rating, Comment: &comment,
+	})
+	for _, key := range []string{`"answered":true`, `"rating":3`, `"comment":"ดีมาก"`, `"activity_name":"ปลูกป่า"`} {
+		if !strings.Contains(string(out), key) {
+			t.Fatalf("expected %s in %s", key, out)
+		}
+	}
+}

@@ -304,9 +304,13 @@ func (r *WBWCheckpointRepository) Progress(ctx context.Context, participantID st
 	}
 
 	rows, err := r.db.Query(ctx, `
-		SELECT c.checkpoint_id, c.name, c.sequence, ci.server_received_at
+		SELECT c.checkpoint_id, c.name, c.activity_name, c.sequence, ci.server_received_at,
+		       (f.id IS NOT NULL) AS answered, f.rating, f.comment
 		  FROM check_in ci
 		  JOIN checkpoint c ON c.checkpoint_id = ci.checkpoint_id
+		  LEFT JOIN checkin_feedback f
+		         ON f.participant_id = ci.participant_id
+		        AND f.checkpoint_id  = ci.checkpoint_id
 		 WHERE ci.participant_id = $1::uuid AND c.requires_checkin
 		 ORDER BY c.sequence NULLS LAST, c.checkpoint_id`, participantID)
 	if err != nil {
@@ -317,7 +321,8 @@ func (r *WBWCheckpointRepository) Progress(ctx context.Context, participantID st
 	for rows.Next() {
 		var it model.CheckinProgressItem
 		var at time.Time
-		if err := rows.Scan(&it.CheckpointID, &it.Name, &it.Sequence, &at); err != nil {
+		if err := rows.Scan(&it.CheckpointID, &it.Name, &it.ActivityName, &it.Sequence, &at,
+			&it.Answered, &it.Rating, &it.Comment); err != nil {
 			return nil, err
 		}
 		it.At = at.UTC().Format(time.RFC3339)

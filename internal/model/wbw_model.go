@@ -358,10 +358,15 @@ type AssignStaffRequest struct {
 
 // CheckinProgressItem — ฐานหนึ่งที่ผู้เข้าร่วมเช็คอินไปแล้ว
 type CheckinProgressItem struct {
-	CheckpointID int    `json:"checkpoint_id"`
-	Name         string `json:"name"`
-	Sequence     *int   `json:"sequence"`
-	At           string `json:"at"`
+	CheckpointID int     `json:"checkpoint_id"`
+	Name         string  `json:"name"`
+	ActivityName *string `json:"activity_name"`
+	Sequence     *int    `json:"sequence"`
+	At           string  `json:"at"`
+	// Answered = มีแถวใน checkin_feedback แล้ว · ไม่ได้เก็บสถานะไว้ที่ไหน คำนวณจาก LEFT JOIN
+	Answered bool    `json:"answered"`
+	Rating   *int    `json:"rating"`
+	Comment  *string `json:"comment"`
 }
 
 // CheckinProgress — ความคืบหน้าของผู้เข้าร่วมคนหนึ่ง
