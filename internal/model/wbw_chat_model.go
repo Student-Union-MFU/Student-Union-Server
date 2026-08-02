@@ -106,6 +106,10 @@ type CheckinResult struct {
 	Bib              *int    `json:"bib"`
 	HasMedicalFlag   bool    `json:"has_medical_flag"`
 	AlreadyCheckedIn bool    `json:"already_checked_in"`
+
+	// ParticipantID — ไม่ส่งออกใน JSON (`-`) เพราะจอเจ้าหน้าที่ไม่ได้ใช้ และ id ผู้ใช้
+	// ไม่ควรรั่วไปอยู่ในมือเครื่องอื่นโดยไม่จำเป็น · service ใช้ยิงแจ้งเตือนให้ถูกคน
+	ParticipantID string `json:"-"`
 }
 
 /* ---------- โปรไฟล์ตัวเอง ---------- */

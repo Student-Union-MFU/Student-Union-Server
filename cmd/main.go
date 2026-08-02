@@ -139,7 +139,7 @@ func main() {
 	wbwGroupHandler := handler.NewWBWGroupHandler(wbwGroupService)
 
 	wbwStaffRepo := repository.NewWBWStaffRepository(pool)
-	wbwStaffService := service.NewWBWStaffService(wbwStaffRepo)
+	wbwStaffService := service.NewWBWStaffService(wbwStaffRepo, wbwNotiService, wbwPushService)
 	wbwStaffHandler := handler.NewWBWStaffHandler(wbwStaffService)
 
 	// ความคืบหน้าเช็คอินของตัวเอง — ใช้ repo เดิมที่ wbwAdminService ใช้อยู่แล้ว

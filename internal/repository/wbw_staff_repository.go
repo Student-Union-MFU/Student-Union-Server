@@ -83,6 +83,7 @@ func (r *WBWStaffRepository) Checkin(ctx context.Context, staffID string, checkp
 	if err != nil {
 		return nil, err
 	}
+	out.ParticipantID = userID
 
 	// ธงข้อมูลการแพทย์ — เตือนเจ้าหน้าที่หน้าฐาน · ไม่มีแถว health_details = ไม่มีธง
 	if err := r.db.QueryRow(ctx,
@@ -103,6 +104,17 @@ func (r *WBWStaffRepository) Checkin(ctx context.Context, staffID string, checkp
 		}
 	}
 	return &out, nil
+}
+
+// CheckpointName — ชื่อฐานไว้ตั้งหัวข้อแจ้งเตือน · หาไม่เจอหรือ query พังคืนค่าว่าง
+// ไม่ใช่ error: ชื่อหายไปจากหัวข้อแค่ทำให้ข้อความดูด้วน ไม่ควรทำให้ทั้งแจ้งเตือนหายไปด้วย
+func (r *WBWStaffRepository) CheckpointName(ctx context.Context, checkpointID int) string {
+	var name string
+	if err := r.db.QueryRow(ctx,
+		`SELECT name FROM checkpoint WHERE checkpoint_id = $1`, checkpointID).Scan(&name); err != nil {
+		return ""
+	}
+	return name
 }
 
 /* ---------- device token (push) ---------- */
@@ -170,6 +182,29 @@ func (r *WBWDeviceRepository) ChatPushTargets(ctx context.Context, groupID int, 
 	for rows.Next() {
 		var t PushTarget
 		if err := rows.Scan(&t.Token, &t.Badge); err != nil {
+			return nil, err
+		}
+		list = append(list, t)
+	}
+	return list, rows.Err()
+}
+
+// UserPushTargets — เครื่องทั้งหมดของผู้ใช้คนเดียว
+//
+// badge เป็น 0 เสมอ: จำนวนที่ยังไม่อ่านของแจ้งเตือนคิดคนละทางกับแชท และแอปนับ
+// badge กระดิ่งเองจาก /notifications อยู่แล้ว
+func (r *WBWDeviceRepository) UserPushTargets(ctx context.Context, userID string) ([]PushTarget, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT token FROM device_token WHERE user_id = $1::uuid`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list := []PushTarget{}
+	for rows.Next() {
+		var t PushTarget
+		if err := rows.Scan(&t.Token); err != nil {
 			return nil, err
 		}
 		list = append(list, t)

@@ -224,6 +224,86 @@ func (s *WBWPushService) sendChat(ctx context.Context, msg model.Message) error 
 	return nil
 }
 
+// SendUserPush — push เข้าเครื่องของผู้ใช้คนเดียว · fire-and-forget
+//
+// ต้องไม่ทำให้คนเรียกช้าหรือพัง: เจ้าหน้าที่ยืนอยู่หน้าคิวตอนสแกน ถ้า FCM ช้า
+// หรือล่มแล้วลากให้ /staff/checkin ตอบช้า คิวก็ยาวขึ้นทันที
+// context.WithoutCancel เพราะ ctx ของ request ถูกยกเลิกทันทีที่ตอบ response เสร็จ
+func (s *WBWPushService) SendUserPush(ctx context.Context, userID, title, body string, data map[string]string) {
+	if s.tokens == nil {
+		return
+	}
+	detached := context.WithoutCancel(ctx)
+	go func() {
+		c, cancel := context.WithTimeout(detached, pushTimeout)
+		defer cancel()
+		if err := s.sendUser(c, userID, title, body, data); err != nil {
+			slog.Error("ส่ง push รายคนไม่สำเร็จ", "user_id", userID, "err", err)
+		}
+	}()
+}
+
+// sendUser — เหมือน sendChat ทุกขั้นตอน (ขอ token ครั้งเดียว ยิงแต่ละเครื่องพร้อมกัน
+// เก็บกวาด token ตายผ่าน sendOne ตัวเดียวกัน) ต่างแค่เป้าหมายเป็นทุกเครื่องของคนเดียว
+// ไม่ใช่ทั้งกลุ่ม · title/body/data มาจากผู้เรียกแทนที่จะคำนวณจาก model.Message
+// badge ใช้ t.Badge ตรงๆ ซึ่ง UserPushTargets ตั้งเป็น 0 เสมอ (ดู comment ที่นั่น)
+func (s *WBWPushService) sendUser(ctx context.Context, userID, title, body string, data map[string]string) error {
+	targets, err := s.repo.UserPushTargets(ctx, userID)
+	if err != nil || len(targets) == 0 {
+		return err
+	}
+
+	// ขอ access token ครั้งเดียวใช้ทั้งรอบ · TokenSource cache ให้อยู่แล้ว
+	// ไม่ต้องขอใหม่ทุกเครื่อง
+	tok, err := s.tokens.Token()
+	if err != nil {
+		return fmt.Errorf("ขอ access token ไม่ได้: %w", err)
+	}
+
+	var (
+		mu      sync.Mutex
+		invalid []string
+		wg      sync.WaitGroup
+	)
+	sem := make(chan struct{}, pushConcurrency)
+
+	for _, t := range targets {
+		wg.Add(1)
+		go func(t repository.PushTarget) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			badge := t.Badge
+			req := fcmRequest{Message: fcmMessage{
+				Token:        t.Token,
+				Notification: &fcmNotification{Title: title, Body: body},
+				Data:         data,
+				APNS:         &fcmAPNS{Headers: map[string]string{"apns-priority": "10"}},
+			}}
+			req.Message.APNS.Payload.Aps = fcmAps{Sound: "default", Badge: &badge}
+
+			dead, err := s.sendOne(ctx, tok, req)
+			if err != nil {
+				slog.Warn("push หนึ่งเครื่องล้มเหลว", "err", err)
+				return
+			}
+			if dead {
+				mu.Lock()
+				invalid = append(invalid, t.Token)
+				mu.Unlock()
+			}
+		}(t)
+	}
+	wg.Wait()
+
+	if len(invalid) > 0 {
+		slog.Info("เก็บกวาด device token ที่ใช้ไม่ได้", "count", len(invalid))
+		return s.repo.DeleteTokens(ctx, invalid)
+	}
+	return nil
+}
+
 // sendOne คืน dead=true เมื่อ FCM บอกว่า token นี้ใช้ไม่ได้แล้ว (ถอนแอป/ติดตั้งใหม่)
 // ไม่ลบ token พวกนี้ทิ้ง = ยิง push ใส่เครื่องที่ไม่มีอยู่จริงไปเรื่อยๆ ทุกวัน
 func (s *WBWPushService) sendOne(ctx context.Context, tok *oauth2.Token, payload fcmRequest) (dead bool, err error) {
