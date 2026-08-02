@@ -248,7 +248,9 @@ type Notification struct {
 	Audience   string  `json:"audience"`
 	AudienceID *string `json:"audience_id"`
 	// RefID ชี้ไปแถวที่แจ้งเตือนนี้พูดถึง (เช่น checkpoint_id ของ checkin_feedback) —
-	// ไม่มี omitempty เพราะแอปต้องเจอคีย์นี้เสมอแม้เป็น null ไม่งั้น decode ฝั่ง iOS พังตอน key หาย
+	// ไม่มี omitempty เพื่อให้คีย์นี้ออกมาเสมอแม้เป็น null รักษารูปทรง JSON ให้คงที่ไว้ก่อน
+	// สำหรับฝั่ง iOS ซึ่งยังไม่มี field นี้อยู่จริงตอนนี้ — กันไว้เชิงป้องกันไม่ให้ decoder ใน
+	// อนาคตต้องเจอคีย์ที่โผล่บ้างหายบ้าง ไม่ใช่ข้อพิสูจน์ว่ามี decoder ตัวไหนพังอยู่ตอนนี้
 	RefID     *string `json:"ref_id"`
 	CreatedBy *string `json:"created_by"`
 	CreatedAt string  `json:"created_at"`

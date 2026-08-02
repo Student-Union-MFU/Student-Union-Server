@@ -33,8 +33,9 @@ func TestFeedbackRequestAllowsMissingComment(t *testing.T) {
 	}
 }
 
-// ref_id ต้องอยู่ใน JSON เสมอ แม้เป็น null — แอปอ่านคีย์นี้เพื่อรู้ว่าแจ้งเตือนชี้ไปฐานไหน
-// ถ้าใส่ omitempty คีย์จะหายไปทั้งดวงตอนเป็น nil และ decoder ฝั่ง iOS จะเจอ key ไม่ครบ
+// ref_id ต้องอยู่ใน JSON เสมอ แม้เป็น null — ฝั่ง iOS ยังไม่มี field นี้อยู่จริงตอนนี้ เทสนี้ปักหมุด
+// สัญญาไว้ล่วงหน้าให้รูปทรง JSON คงที่เสมอ ถ้าใส่ omitempty คีย์จะหายไปทั้งดวงตอนเป็น nil ซึ่งจะทำให้
+// decoder ในอนาคตต้องเจอคีย์ที่โผล่บ้างหายบ้าง (กันไว้เชิงป้องกัน ไม่ใช่ข้อพิสูจน์ว่ามันพังอยู่ตอนนี้)
 func TestNotificationAlwaysCarriesRefIDKey(t *testing.T) {
 	out, err := json.Marshal(Notification{ID: 1, Type: "announcement", Title: "t"})
 	if err != nil {
