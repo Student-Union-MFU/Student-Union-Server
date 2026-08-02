@@ -40,8 +40,12 @@ func scanFeedback(row pgx.Row) (*model.CheckinFeedback, error) {
 
 // Submit — บันทึกความเห็น
 //
-// ลำดับสำคัญ: เช็ค client_id เดิมก่อน (retry ตอนเน็ตหลุด ต้องได้แถวเดิมไม่ใช่ 409)
-// แล้วค่อยเช็คว่าเคยเช็คอินฐานนี้จริงไหม แล้วค่อย insert
+// ลำดับสำคัญ: เช็ค client_id เดิมก่อน แล้วค่อยเช็คว่าเคยเช็คอินฐานที่ต้องเช็คอินจริงไหม
+// แล้วค่อย insert — แต่ SELECT-then-INSERT แบบนี้กันซ้ำได้แค่ retry ที่มาไม่ชนกัน ถ้าสอง
+// request client_id เดียวกันแข่งกันจริง (เช่น outbox flush ซ้อนกับ request เดิมที่ยังค้างอยู่)
+// ทั้งคู่จะเห็น "ยังไม่มี" พร้อมกันแล้วไปชนกันตอน insert แทน ตัวที่ตัดสินผลให้ถูกจริง ๆ คือ
+// conflict handler ใน insert ด้านล่าง — แยกว่า 23505 ชนที่ client_id ตัวเอง (retry คืน 200)
+// หรือชนที่ (participant, checkpoint) ของคนอื่น (คืน 409)
 func (r *WBWFeedbackRepository) Submit(ctx context.Context, participantID string, req model.FeedbackRequest) (*model.CheckinFeedback, bool, error) {
 	// 1. client_id เดิม = ส่งซ้ำ คืนแถวเดิม ไม่ใช่ error
 	existing, err := scanFeedback(r.db.QueryRow(ctx,
@@ -53,10 +57,16 @@ func (r *WBWFeedbackRepository) Submit(ctx context.Context, participantID string
 		return nil, false, err
 	}
 
-	// 2. ต้องเคยเช็คอินฐานนี้จริง
+	// 2. ต้องเคยเช็คอินฐานที่ต้องเช็คอินจริง (requires_checkin) — ฐานบริการ (เช่น จุดพัก/ห้องน้ำ)
+	// ไม่รับความเห็นตาม spec (Non-Goals: "No feedback for service points") แม้จะมีแถว
+	// check_in อยู่จริงก็ตาม จึง join กับ checkpoint แล้วกรองด้วย ไม่ใช่เช็คแค่ check_in เฉย ๆ
 	var checkedIn bool
-	if err := r.db.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM check_in WHERE participant_id = $1::uuid AND checkpoint_id = $2)`,
+	if err := r.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM check_in ci
+			  JOIN checkpoint c ON c.checkpoint_id = ci.checkpoint_id
+			 WHERE ci.participant_id = $1::uuid AND ci.checkpoint_id = $2 AND c.requires_checkin
+		)`,
 		participantID, req.CheckpointID).Scan(&checkedIn); err != nil {
 		return nil, false, err
 	}
@@ -64,7 +74,10 @@ func (r *WBWFeedbackRepository) Submit(ctx context.Context, participantID string
 		return nil, false, ErrNotCheckedIn
 	}
 
-	// 3. insert · ชนคู่ (participant, checkpoint) = ตอบไปแล้วด้วย client_id อื่น
+	// 3. insert · 23505 มีสองสาเหตุที่ต่างกัน ต้องแยกให้ถูก ไม่ใช่ฟันธงว่าเป็น "คนอื่นตอบไปแล้ว"
+	// เสมอไป — ชน unique ได้สองทาง: client_id เดียวกัน (request อื่นที่ client_id เดียวกับ
+	// เราเพิ่ง insert ไปก่อน = แข่งกับตัวเอง ไม่ใช่ error) หรือ (participant, checkpoint)
+	// เดียวกัน (ตอบไปแล้วจริงด้วย client_id อื่น)
 	created, err := scanFeedback(r.db.QueryRow(ctx, `
 		INSERT INTO checkin_feedback (participant_id, checkpoint_id, rating, comment, client_id, device_time)
 		VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6::timestamptz)
@@ -72,6 +85,18 @@ func (r *WBWFeedbackRepository) Submit(ctx context.Context, participantID string
 		participantID, req.CheckpointID, req.Rating, req.Comment, req.ClientID, req.DeviceTime))
 	if err != nil {
 		if IsPGCode(err, "23505") {
+			// เช็ค client_id ของเราเองก่อน — ถ้าเจอ แปลว่า request อื่นที่ client_id เดียวกัน
+			// (ตัวเราเอง retry ซ้อนกัน) แทรกไปก่อนแล้ว คืนแถวนั้นเหมือน step 1 ไม่ใช่ 409
+			own, oerr := scanFeedback(r.db.QueryRow(ctx,
+				`SELECT `+feedbackCols+` FROM checkin_feedback WHERE client_id = $1::uuid`, req.ClientID))
+			if oerr == nil {
+				return own, false, nil
+			}
+			if !errors.Is(oerr, pgx.ErrNoRows) {
+				return nil, false, oerr
+			}
+
+			// ไม่ใช่ client_id ตัวเอง แปลว่าชนที่ (participant, checkpoint) จริง — ตอบไปแล้วด้วย client_id อื่น
 			prev, qerr := scanFeedback(r.db.QueryRow(ctx,
 				`SELECT `+feedbackCols+` FROM checkin_feedback
 				  WHERE participant_id = $1::uuid AND checkpoint_id = $2`,
@@ -87,6 +112,11 @@ func (r *WBWFeedbackRepository) Submit(ctx context.Context, participantID string
 }
 
 // ListAll — ความเห็นทั้งหมด สำหรับแอดมิน
+//
+// กรอง requires_checkin เหมือนกับ SummaryByCheckpoint โดยตั้งใจ — ถ้าตัวหนึ่งกรองอีกตัวไม่กรอง
+// รายการดิบกับยอดรวมจะไม่ตรงกัน (เช่น เจอแถวของฐานบริการที่หลุดเข้ามาจากก่อนแก้ Submit)
+// Submit เองก็บล็อกฐานบริการไปแล้วตั้งแต่ทางเข้า แถวใหม่จะไม่มีทางหลุดผ่านมาถึงจุดนี้อีก
+// แต่ endpoint อ่านสองตัวนี้ก็ยังต้องเห็นตรงกันเผื่อมีแถวเก่าหลงเหลืออยู่
 func (r *WBWFeedbackRepository) ListAll(ctx context.Context) ([]model.AdminFeedbackRow, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT f.id, f.checkpoint_id, c.name, c.activity_name,
@@ -95,6 +125,7 @@ func (r *WBWFeedbackRepository) ListAll(ctx context.Context) ([]model.AdminFeedb
 		  FROM checkin_feedback f
 		  JOIN checkpoint c ON c.checkpoint_id = f.checkpoint_id
 		  LEFT JOIN participant_profile p ON p.user_id = f.participant_id
+		 WHERE c.requires_checkin
 		 ORDER BY f.created_at DESC`)
 	if err != nil {
 		return nil, err
