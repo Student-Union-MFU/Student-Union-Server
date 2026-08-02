@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"su-server/internal/model"
 	"su-server/internal/repository"
@@ -16,6 +17,13 @@ var (
 	ErrMissingIdentifier = errors.New("need qr_token or bib")
 	ErrMissingToken      = errors.New("missing device token")
 )
+
+// notifyFeedbackTimeout — เพดานเวลาของ notifyFeedback ทั้งก้อน (CheckpointName +
+// noti.Create; ส่วน push มี pushTimeout ของตัวเองแยกต่างหากอยู่แล้วใน SendUserPush)
+// เผื่อเยอะพอสำหรับ query PK เดี่ยวๆ กับ insert แถวเดียวตอน DB ปกติ (หลัก ms) แต่สั้น
+// พอที่ถ้า Postgres ค้างจริง goroutine จะคืน connection กลับ pool ภายในไม่กี่วินาที
+// ไม่ใช่ยึดไว้ตลอดไปทีละ goroutine ต่อการสแกนหนึ่งครั้ง (วันงานจริงสแกนกันเป็นพันครั้ง)
+const notifyFeedbackTimeout = 8 * time.Second
 
 type WBWStaffService struct {
 	repo *repository.WBWStaffRepository
@@ -54,42 +62,48 @@ func (s *WBWStaffService) Checkin(ctx context.Context, staffID string, req model
 	}
 
 	// เช็คอินสำเร็จครั้งแรกเท่านั้นถึงเด้ง — สแกนซ้ำคนเดิมต้องไม่แจ้งเตือนซ้ำ
-	//
-	// ยิงทิ้งทั้งก้อน (บันทึกแถว notification + push) ด้วย context.WithoutCancel + goroutine
-	// เหมือน SendChatPush ทุกประการ: เจ้าหน้าที่ยืนรอหน้าคิว ต้องไม่รอ round-trip DB
-	// เพิ่มก่อนได้คำตอบ และ ctx ของ request ก็ถูกยกเลิกทันทีที่ตอบ response เสร็จอยู่แล้ว —
-	// ตัว notifyFeedback เองไม่ต้องรู้เรื่อง goroutine เลย ให้ตรงนี้จัดการแทน
+	// check_in ข้างบนนี้เขียนสำเร็จแบบ synchronous ไปแล้วก่อนจะยิง notifyFeedback ทิ้ง
+	// /me/progress จึงเห็นฐานนี้ทันที ไม่ว่า notifyFeedback ข้างล่างจะช้าหรือพังแค่ไหน
 	if !res.AlreadyCheckedIn && res.ParticipantID != "" {
-		detached := context.WithoutCancel(ctx)
-		go s.notifyFeedback(detached, res.ParticipantID, *req.CheckpointID)
+		s.notifyFeedback(ctx, res.ParticipantID, *req.CheckpointID)
 	}
 	return res, nil
 }
 
-// notifyFeedback — แจ้งผู้เข้าร่วมว่าเช็คอินแล้วและขอความเห็นต่อฐาน
+// notifyFeedback — แจ้งผู้เข้าร่วมว่าเช็คอินแล้วและขอความเห็นต่อฐาน · fire-and-forget
 //
-// เรียกจาก goroutine ที่แยกออกไปแล้วเสมอ (ดู Checkin) จึงไม่ต้องกังวลเรื่องความช้า
-// ที่นี่อีกชั้น แต่ยังต้องทนต่อความล้มเหลวเอง: บันทึกแถวไม่สำเร็จก็แค่ log แล้วปล่อยผ่าน
-// (การเช็คอินสำเร็จไปแล้วจริงๆ ตั้งแต่ก่อนเรียกฟังก์ชันนี้) · แอปยังเจอฐานที่ยังไม่ตอบได้
-// จาก poll /me/progress อยู่ดี แจ้งเตือนเป็นทางลัด ไม่ใช่ทางเดียว
+// รูปแบบเดียวกับ SendChatPush: context.WithoutCancel ตัด ctx ออกจาก request (ของเดิม
+// ถูกยกเลิกทันทีที่ /staff/checkin ตอบ response เสร็จ) แล้วยิงใน goroutine แยก ครอบ
+// ทั้งก้อนด้วย notifyFeedbackTimeout ให้ทั้ง CheckpointName และ noti.Create มีเพดานเวลา
+// จริง — เดิมครอบแค่ SendUserPush (ซึ่งมี pushTimeout ของตัวเองอยู่แล้ว) สอง query DB
+// ตรงนี้เลยไม่มีเพดานเลย ถ้า Postgres ค้าง goroutine นี้จะไม่มีวันจบและยึด connection
+// ใน pool ไว้เงียบๆ (สแกนตอบ 200 ไปแล้ว ไม่มีใครเห็น error) · บันทึกแถวไม่สำเร็จก็แค่ log
+// แล้วปล่อยผ่าน (การเช็คอินสำเร็จไปแล้วจริงๆ) แอปยังเจอฐานที่ยังไม่ตอบได้จาก poll
+// /me/progress อยู่ดี แจ้งเตือนเป็นทางลัด ไม่ใช่ทางเดียว
 func (s *WBWStaffService) notifyFeedback(ctx context.Context, participantID string, checkpointID int) {
-	name := s.repo.CheckpointName(ctx, checkpointID)
-	title := "เช็คอิน " + name + " แล้ว"
-	body := "แตะเพื่อให้คะแนนฐานนี้"
-	typ, audience, level := "checkin_feedback", "user", "info"
-	ref := strconv.Itoa(checkpointID)
+	detached := context.WithoutCancel(ctx)
+	go func() {
+		c, cancel := context.WithTimeout(detached, notifyFeedbackTimeout)
+		defer cancel()
 
-	if _, err := s.noti.Create(ctx, model.NotificationRequest{
-		Type: &typ, Title: title, Body: &body, Level: &level,
-		Audience: &audience, AudienceID: &participantID, RefID: &ref,
-	}, participantID); err != nil {
-		slog.Error("สร้างแจ้งเตือนขอความเห็นไม่สำเร็จ", "err", err)
-	}
+		name := s.repo.CheckpointName(c, checkpointID)
+		title := "เช็คอิน " + name + " แล้ว"
+		body := "แตะเพื่อให้คะแนนฐานนี้"
+		typ, audience, level := "checkin_feedback", "user", "info"
+		ref := strconv.Itoa(checkpointID)
 
-	s.push.SendUserPush(ctx, participantID, title, body, map[string]string{
-		"type":          "checkin_feedback",
-		"checkpoint_id": ref,
-	})
+		if _, err := s.noti.Create(c, model.NotificationRequest{
+			Type: &typ, Title: title, Body: &body, Level: &level,
+			Audience: &audience, AudienceID: &participantID, RefID: &ref,
+		}, participantID); err != nil {
+			slog.Error("สร้างแจ้งเตือนขอความเห็นไม่สำเร็จ", "err", err)
+		}
+
+		s.push.SendUserPush(c, participantID, title, body, map[string]string{
+			"type":          "checkin_feedback",
+			"checkpoint_id": ref,
+		})
+	}()
 }
 
 /* ---------- device token ---------- */
