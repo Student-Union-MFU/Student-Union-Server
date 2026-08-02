@@ -345,3 +345,22 @@ type CheckpointRequest struct {
 type AssignStaffRequest struct {
 	UserID string `json:"user_id"`
 }
+
+/* ---------- progress (ต้นไม้หน้า Home) ---------- */
+
+// CheckinProgressItem — ฐานหนึ่งที่ผู้เข้าร่วมเช็คอินไปแล้ว
+type CheckinProgressItem struct {
+	CheckpointID int    `json:"checkpoint_id"`
+	Name         string `json:"name"`
+	Sequence     *int   `json:"sequence"`
+	At           string `json:"at"`
+}
+
+// CheckinProgress — ความคืบหน้าของผู้เข้าร่วมคนหนึ่ง
+//
+// Total นับจาก DB ทุกครั้ง ไม่ใช่ค่าคงที่ 8 — แอดมินเพิ่ม/ลบฐานได้ผ่าน
+// /wbw/admin/checkpoints ถ้าฝังเลขไว้ ต้นไม้ในแอปจะเพี้ยนทันทีที่แก้ฐานวันงาน
+type CheckinProgress struct {
+	Total     int                   `json:"total"`
+	CheckedIn []CheckinProgressItem `json:"checked_in"`
+}

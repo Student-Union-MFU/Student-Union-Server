@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"su-server/internal/model"
 
@@ -285,4 +286,42 @@ func (r *WBWCheckpointRepository) RejectStaffRequest(ctx context.Context, id str
 		return "", ErrNotFound
 	}
 	return username, err
+}
+
+/* ---------- progress (ต้นไม้หน้า Home) ---------- */
+
+// Progress — ฐานที่ผู้เข้าร่วมคนนี้เช็คอินแล้ว + จำนวนฐานทั้งหมดที่ต้องเช็คอิน
+//
+// นับ total แยกจากรายการ เพราะต้องได้เลขที่ถูกแม้ยังไม่เคยเช็คอินสักฐาน
+// (COUNT บน join จะได้ 0 ทั้งคู่)
+func (r *WBWCheckpointRepository) Progress(ctx context.Context, participantID string) (*model.CheckinProgress, error) {
+	out := &model.CheckinProgress{CheckedIn: []model.CheckinProgressItem{}}
+
+	if err := r.db.QueryRow(ctx,
+		`SELECT count(*)::int FROM checkpoint WHERE requires_checkin`,
+	).Scan(&out.Total); err != nil {
+		return nil, err
+	}
+
+	rows, err := r.db.Query(ctx, `
+		SELECT c.checkpoint_id, c.name, c.sequence, ci.server_received_at
+		  FROM check_in ci
+		  JOIN checkpoint c ON c.checkpoint_id = ci.checkpoint_id
+		 WHERE ci.participant_id = $1::uuid AND c.requires_checkin
+		 ORDER BY c.sequence NULLS LAST, c.checkpoint_id`, participantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var it model.CheckinProgressItem
+		var at time.Time
+		if err := rows.Scan(&it.CheckpointID, &it.Name, &it.Sequence, &at); err != nil {
+			return nil, err
+		}
+		it.At = at.UTC().Format(time.RFC3339)
+		out.CheckedIn = append(out.CheckedIn, it)
+	}
+	return out, rows.Err()
 }

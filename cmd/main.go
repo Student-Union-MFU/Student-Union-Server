@@ -142,6 +142,10 @@ func main() {
 	wbwStaffService := service.NewWBWStaffService(wbwStaffRepo)
 	wbwStaffHandler := handler.NewWBWStaffHandler(wbwStaffService)
 
+	// ความคืบหน้าเช็คอินของตัวเอง — ใช้ repo เดิมที่ wbwAdminService ใช้อยู่แล้ว
+	wbwProgressService := service.NewWBWProgressService(wbwCheckpointRepo)
+	wbwProgressHandler := handler.NewWBWProgressHandler(wbwProgressService)
+
 	wbwDeviceService := service.NewWBWDeviceService(wbwDeviceRepo)
 	wbwDeviceHandler := handler.NewWBWDeviceHandler(wbwDeviceService)
 
@@ -317,6 +321,8 @@ func main() {
 		r.With(requireAuth).Get("/me", wbwAdminHandler.Me)
 		// แก้ได้เฉพาะรูปตัวเอง — ฟิลด์อื่นเป็นของ admin (ดู UpdateOwnPhoto)
 		r.With(requireAuth).Patch("/me", wbwAdminHandler.PatchMe)
+		// ความคืบหน้าเช็คอินของตัวเอง — แอปใช้คุมขั้นต้นไม้ที่หน้า Home
+		r.With(requireAuth).Get("/me/progress", wbwProgressHandler.MyProgress)
 
 		r.Route("/groups", func(r chi.Router) {
 			r.Use(requireAuth)
