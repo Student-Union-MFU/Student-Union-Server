@@ -31,6 +31,14 @@ services:
   # sync whether you migrate by hand or via compose. Reaches Postgres by its
   # compose service name ("database") over the shared network. On a fully
   # migrated DB it prints "no change" and exits 0, so it is safe every boot.
+  #
+  # If it exits with "Dirty database version N", a previous run of migration N
+  # aborted partway. golang-migrate then refuses every later run — including the
+  # one that would fix it — and because the backend waits on this service, the
+  # whole stack stops coming up. Check what the schema actually contains, stamp
+  # the version back to the last one that really applied, then re-run:
+  #   docker compose run --rm migrate -path=/migrations \
+  #     -database "postgres://admin:yion@database:5432/sudb?sslmode=disable" force <N-1>
   migrate:
     image: migrate/migrate:latest
     container_name: su-migrate

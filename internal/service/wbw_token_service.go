@@ -11,7 +11,7 @@ import (
 /*
 Token ของ WBW แยกจาก JWTService เดิม เพราะ claim คนละแบบ:
 JWTService ใช้ user_id เป็น int (users.id ของ su-server)
-แต่ WBW ใช้ app_user.user_id เป็น UUID + ต้องมี role กับ username ใน claim
+แต่ WBW ใช้ wbw_user.user_id เป็น UUID + ต้องมี role กับ username ใน claim
 
 รูปแบบ claim ตรงกับ Express เดิม ({sub, role, username}, HS256, อายุ 30 วัน)
 token ที่ออกจาก Express เดิมจึงยังใช้ต่อได้ ถ้า JWT_SECRET เป็นค่าเดียวกัน

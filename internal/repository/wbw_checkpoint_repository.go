@@ -30,7 +30,7 @@ func (r *WBWCheckpointRepository) List(ctx context.Context) ([]model.Checkpoint,
 		       ) FILTER (WHERE u.user_id IS NOT NULL), '[]') AS staff
 		  FROM checkpoint c
 		  LEFT JOIN checkpoint_staff cs ON cs.checkpoint_id = c.checkpoint_id
-		  LEFT JOIN app_user         u  ON u.user_id = cs.user_id
+		  LEFT JOIN wbw_user         u  ON u.user_id = cs.user_id
 		 GROUP BY c.checkpoint_id
 		 ORDER BY c.sequence NULLS LAST, c.checkpoint_id`)
 	if err != nil {
@@ -60,7 +60,7 @@ func (r *WBWCheckpointRepository) BasesOverview(ctx context.Context) ([]model.Ba
 		       ) FILTER (WHERE u.user_id IS NOT NULL), '[]') AS staff
 		  FROM checkpoint c
 		  LEFT JOIN checkpoint_staff cs ON cs.checkpoint_id = c.checkpoint_id
-		  LEFT JOIN app_user         u  ON u.user_id = cs.user_id
+		  LEFT JOIN wbw_user         u  ON u.user_id = cs.user_id
 		 WHERE c.requires_checkin = TRUE
 		 GROUP BY c.checkpoint_id
 		 ORDER BY c.sequence NULLS LAST, c.checkpoint_id`)
@@ -128,7 +128,7 @@ func (r *WBWCheckpointRepository) Delete(ctx context.Context, id int) (string, e
 func (r *WBWCheckpointRepository) AssignStaff(ctx context.Context, checkpointID int, userID string) (string, error) {
 	var username string
 	err := r.db.QueryRow(ctx,
-		`SELECT username FROM app_user WHERE user_id = $1 AND role IN ('staff','admin')`, userID).Scan(&username)
+		`SELECT username FROM wbw_user WHERE user_id = $1 AND role IN ('staff','admin')`, userID).Scan(&username)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
@@ -160,7 +160,7 @@ func (r *WBWCheckpointRepository) ListUsers(ctx context.Context) ([]model.AdminU
 	// เฉพาะบัญชีที่อนุมัติแล้ว — ที่ยัง pending อยู่ในแท็บ "คำขอเจ้าหน้าที่" แทน
 	rows, err := r.db.Query(ctx, `
 		SELECT user_id::text, username, role::text, display_name, created_at::text
-		  FROM app_user WHERE role IN ('staff','admin') AND status = 'approved'
+		  FROM wbw_user WHERE role IN ('staff','admin') AND status = 'approved'
 		 ORDER BY role, username`)
 	if err != nil {
 		return nil, err
@@ -181,7 +181,7 @@ func (r *WBWCheckpointRepository) ListUsers(ctx context.Context) ([]model.AdminU
 func (r *WBWCheckpointRepository) CreateUser(ctx context.Context, username, hash, role string, displayName *string) (*model.AdminUser, error) {
 	var u model.AdminUser
 	err := r.db.QueryRow(ctx,
-		`INSERT INTO app_user (username, password_hash, role, display_name)
+		`INSERT INTO wbw_user (username, password_hash, role, display_name)
 		 VALUES ($1, $2, $3::user_role, $4)
 		 RETURNING user_id::text, username, role::text, display_name, created_at::text`,
 		username, hash, role, displayName,
@@ -198,7 +198,7 @@ func (r *WBWCheckpointRepository) CreateUser(ctx context.Context, username, hash
 func (r *WBWCheckpointRepository) UpdateUser(ctx context.Context, id string, displayName, role *string) (*model.AdminUser, error) {
 	var u model.AdminUser
 	err := r.db.QueryRow(ctx, `
-		UPDATE app_user SET
+		UPDATE wbw_user SET
 		  display_name = COALESCE($2, display_name),
 		  role         = COALESCE($3::user_role, role)
 		WHERE user_id = $1 AND role IN ('staff','admin')
@@ -216,7 +216,7 @@ func (r *WBWCheckpointRepository) UpdateUser(ctx context.Context, id string, dis
 
 func (r *WBWCheckpointRepository) SetUserPassword(ctx context.Context, id, hash string) error {
 	tag, err := r.db.Exec(ctx,
-		`UPDATE app_user SET password_hash = $2 WHERE user_id = $1 AND role IN ('staff','admin')`, id, hash)
+		`UPDATE wbw_user SET password_hash = $2 WHERE user_id = $1 AND role IN ('staff','admin')`, id, hash)
 	if err != nil {
 		return err
 	}
@@ -229,7 +229,7 @@ func (r *WBWCheckpointRepository) SetUserPassword(ctx context.Context, id, hash 
 func (r *WBWCheckpointRepository) DeleteUser(ctx context.Context, id string) (string, error) {
 	var username string
 	err := r.db.QueryRow(ctx,
-		`DELETE FROM app_user WHERE user_id = $1 AND role IN ('staff','admin') RETURNING username`, id).Scan(&username)
+		`DELETE FROM wbw_user WHERE user_id = $1 AND role IN ('staff','admin') RETURNING username`, id).Scan(&username)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrNotFound
 	}
@@ -242,7 +242,7 @@ func (r *WBWCheckpointRepository) DeleteUser(ctx context.Context, id string) (st
 func (r *WBWCheckpointRepository) ListStaffRequests(ctx context.Context) ([]model.StaffRequest, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT user_id::text, username, role::text, display_name, status::text, created_at::text
-		  FROM app_user
+		  FROM wbw_user
 		 WHERE role IN ('staff','admin') AND status = 'pending'
 		 ORDER BY created_at`)
 	if err != nil {
@@ -265,7 +265,7 @@ func (r *WBWCheckpointRepository) ListStaffRequests(ctx context.Context) ([]mode
 func (r *WBWCheckpointRepository) ApproveStaffRequest(ctx context.Context, id string) (string, error) {
 	var username string
 	err := r.db.QueryRow(ctx,
-		`UPDATE app_user SET status = 'approved'
+		`UPDATE wbw_user SET status = 'approved'
 		 WHERE user_id = $1 AND role IN ('staff','admin') AND status = 'pending'
 		 RETURNING username`, id).Scan(&username)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -278,7 +278,7 @@ func (r *WBWCheckpointRepository) ApproveStaffRequest(ctx context.Context, id st
 func (r *WBWCheckpointRepository) RejectStaffRequest(ctx context.Context, id string) (string, error) {
 	var username string
 	err := r.db.QueryRow(ctx,
-		`DELETE FROM app_user
+		`DELETE FROM wbw_user
 		 WHERE user_id = $1 AND role IN ('staff','admin') AND status = 'pending'
 		 RETURNING username`, id).Scan(&username)
 	if errors.Is(err, pgx.ErrNoRows) {

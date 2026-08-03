@@ -54,15 +54,41 @@ build:
 	go build -o bin/main cmd/main.go
 
 # migrations
+#
+# These drive the LOCAL `migrate` CLI against the DB on 127.0.0.1:5432. Compose
+# runs the same files through the `migrate` service on every `make up`, so the
+# two stay in sync. Nothing defined DB_MIGRATION_PATH, which silently turned
+# `-path $(DB_MIGRATION_PATH)` into `-path -database` and broke every target
+# here — it lives in the repo, not in .env, so it is set right here.
+DB_MIGRATION_PATH ?= db/migrations
+
+DB_URL = postgres://$(DB_USER):$(DB_PASS)@localhost:5432/$(DB_NAME)?sslmode=disable
 
 migrate-up:
-	migrate -path $(DB_MIGRATION_PATH) -database "postgres://$(DB_USER):$(DB_PASS)@localhost:5432/$(DB_NAME)?sslmode=disable" up
+	migrate -path $(DB_MIGRATION_PATH) -database "$(DB_URL)" up
 
+# Rolls back N migrations, default 1: `make migrate-down` or `make migrate-down N=3`.
+# -path takes the migrations DIRECTORY, never a single file — pointing it at one
+# file leaves the CLI unable to see the rest of the sequence.
 migrate-down:
-	migrate -path $(DB_MIGRATION_PATH)/$(FILE) -database "postgres://$(DB_USER):$(DB_PASS)@localhost:5432/$(DB_NAME)?sslmode=disable" down
+	migrate -path $(DB_MIGRATION_PATH) -database "$(DB_URL)" down $(or $(N),1)
 
+# Which migration the DB thinks it is on. A "(dirty)" suffix means a migration
+# aborted partway and every later run will refuse until it is cleared.
+migrate-version:
+	migrate -path $(DB_MIGRATION_PATH) -database "$(DB_URL)" version
+
+# Clears a dirty flag by stamping the version the schema REALLY matches:
+#   make migrate-force V=8
+# It only rewrites schema_migrations — it runs no SQL, so check what the schema
+# actually contains first, then re-run migrate-up.
+migrate-force:
+	@test -n "$(V)" || (echo "usage: make migrate-force V=<version>"; exit 1)
+	migrate -path $(DB_MIGRATION_PATH) -database "$(DB_URL)" force $(V)
+
+# Drops EVERY table in the database. Prompts before it does.
 migrate-drop:
-	migrate $(DB_MIGRATION_PATH)/$(FILE) -database "postgres://$(DB_USER):$(DB_PASS)@localhost:5432/$(DB_NAME)?sslmode=disable" drop
+	migrate -path $(DB_MIGRATION_PATH) -database "$(DB_URL)" drop
 
 tables:
 	docker exec -it postgres-db psql -U $(DB_USER) -d $(DB_NAME) -c "\dt"
