@@ -49,7 +49,7 @@ func (r *WBWNotificationRepository) ListSent(ctx context.Context) ([]model.Notif
 		       (SELECT count(*) FROM notification_read nr
 		         WHERE nr.notification_id = n.id AND nr.read_at IS NOT NULL)::text
 		  FROM notification n
-		  LEFT JOIN app_user u ON u.user_id = n.created_by
+		  LEFT JOIN wbw_user u ON u.user_id = n.created_by
 		 ORDER BY n.created_at DESC LIMIT 100`)
 	if err != nil {
 		return nil, err
@@ -108,7 +108,7 @@ func (r *WBWNotificationRepository) ListPublic(ctx context.Context) ([]model.Not
 		       n.created_at::text, n.expires_at::text,
 		       COALESCE(u.display_name, u.username) AS creator_name
 		  FROM notification n
-		  LEFT JOIN app_user u ON u.user_id = n.created_by
+		  LEFT JOIN wbw_user u ON u.user_id = n.created_by
 		 WHERE n.audience = 'all'
 		   AND (n.expires_at IS NULL OR n.expires_at > now())
 		 ORDER BY n.created_at DESC LIMIT 100`)
@@ -204,6 +204,22 @@ func (r *WBWNotificationRepository) CreatePreset(ctx context.Context, userID str
 func (r *WBWNotificationRepository) DeletePreset(ctx context.Context, userID string, id int64) error {
 	_, err := r.db.Exec(ctx,
 		`DELETE FROM notification_preset WHERE id = $1 AND created_by = $2 AND kind = 'preset'`, id, userID)
+	return err
+}
+
+// MarkRead — ผู้ใช้กดอ่านประกาศ · upsert เพราะแถวอาจยังไม่เคยถูกสร้าง
+// (notification_read สร้างตอน "ส่งถึง" ซึ่งของเดิมทำเฉพาะตอนยิง push)
+//
+// read_at ตั้งครั้งแรกแล้วไม่ทับ: เวลาที่อ่านครั้งแรกมีความหมาย ส่วนการเปิดซ้ำไม่มี
+// delivered_at เติมให้ด้วยถ้ายังว่าง — อ่านได้แปลว่าถึงเครื่องแล้วแน่นอน
+func (r *WBWNotificationRepository) MarkRead(ctx context.Context, userID string, notificationID int64) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO notification_read (notification_id, user_id, delivered_at, read_at)
+		VALUES ($1, $2, now(), now())
+		ON CONFLICT (notification_id, user_id) DO UPDATE
+		   SET read_at = COALESCE(notification_read.read_at, now()),
+		       delivered_at = COALESCE(notification_read.delivered_at, now())`,
+		notificationID, userID)
 	return err
 }
 

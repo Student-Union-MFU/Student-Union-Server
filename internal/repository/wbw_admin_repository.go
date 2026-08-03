@@ -31,7 +31,7 @@ const participantSelect = `
 	       p.group_id, g.group_number,
 	       COALESCE(p.checked_in, FALSE) AS checked_in,
 	       h.blood_type::text
-	  FROM app_user u
+	  FROM wbw_user u
 	  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 	  LEFT JOIN school            s ON s.school_id = p.school_id
 	  LEFT JOIN participant_group g ON g.group_id  = p.group_id
@@ -73,7 +73,7 @@ func (r *WBWAdminRepository) ListSchools(ctx context.Context) ([]model.School, e
 func (r *WBWAdminRepository) Dashboard(ctx context.Context) (*model.DashboardStats, error) {
 	var s model.DashboardStats
 	err := r.db.QueryRow(ctx, `
-		SELECT (SELECT count(*) FROM app_user WHERE role = 'participant'),
+		SELECT (SELECT count(*) FROM wbw_user WHERE role = 'participant'),
 		       (SELECT count(*) FROM check_in),
 		       (SELECT count(*) FROM sos_event WHERE resolved = FALSE),
 		       (SELECT count(*) FROM participant_group WHERE member_count >= capacity)
@@ -125,8 +125,13 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		       COALESCE(p.checked_in, FALSE),
 		       p.emergency_contact_name, p.emergency_contact_phone,
 		       h.blood_type::text, h.weight_kg, h.height_cm,
-		       c.consent_health_data, c.consent_emergency_treatment, c.waiver_accepted
-		  FROM app_user u
+		       c.consent_health_data, c.consent_emergency_treatment, c.waiver_accepted,
+		       -- key ที่แอป iOS ต้องการ (contract §2) · user_id/bib_number ซ้ำค่ากับ
+		       -- id/bib ที่ web-next ใช้อยู่ ตั้งใจส่งทั้งสองชื่อ ไม่เปลี่ยนของเดิม
+		       u.user_id::text, u.username, u.role,
+		       p.bib_number, p.qr_token, p.year,
+		       h.food_allergies, h.chronic_disease, h.medications
+		  FROM wbw_user u
 		  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 		  LEFT JOIN school            s ON s.school_id = p.school_id
 		  LEFT JOIN participant_group g ON g.group_id  = p.group_id
@@ -138,7 +143,10 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		&d.GroupID, &d.GroupNumber, &d.PhotoURL, &d.CheckedIn,
 		&d.EmergencyContactName, &d.EmergencyContactPhone,
 		&d.BloodType, &d.WeightKg, &d.HeightCm,
-		&d.ConsentHealthData, &d.ConsentEmergencyTreatment, &d.WaiverAccepted)
+		&d.ConsentHealthData, &d.ConsentEmergencyTreatment, &d.WaiverAccepted,
+		&d.UserID, &d.Username, &d.Role,
+		&d.BibNumber, &d.QRToken, &d.Year,
+		&d.FoodAllergies, &d.ChronicDisease, &d.Medications)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -157,7 +165,7 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 	defer tx.Rollback(ctx)
 
 	var exists string
-	err = tx.QueryRow(ctx, `SELECT user_id::text FROM app_user WHERE user_id = $1 AND role = 'participant'`, id).Scan(&exists)
+	err = tx.QueryRow(ctx, `SELECT user_id::text FROM wbw_user WHERE user_id = $1 AND role = 'participant'`, id).Scan(&exists)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -168,7 +176,7 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 	// student_id เปลี่ยนทั้ง username และ student_id พร้อมกัน
 	if patch.StudentID != nil {
 		if _, err := tx.Exec(ctx,
-			`UPDATE app_user SET username = $2, student_id = $2 WHERE user_id = $1`,
+			`UPDATE wbw_user SET username = $2, student_id = $2 WHERE user_id = $1`,
 			id, *patch.StudentID); err != nil {
 			return nil, err
 		}
@@ -234,7 +242,7 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 func (r *WBWAdminRepository) ResetParticipantPassword(ctx context.Context, id, hash string) (string, error) {
 	var studentID *string
 	err := r.db.QueryRow(ctx,
-		`UPDATE app_user SET password_hash = $2
+		`UPDATE wbw_user SET password_hash = $2
 		 WHERE user_id = $1 AND role = 'participant'
 		 RETURNING student_id`, id, hash).Scan(&studentID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -249,7 +257,7 @@ func (r *WBWAdminRepository) ResetParticipantPassword(ctx context.Context, id, h
 	return *studentID, nil
 }
 
-// DeleteParticipant ลบข้อมูลที่อ้างถึง user ก่อน แล้วค่อยลบ app_user (ที่เหลือ cascade เอง)
+// DeleteParticipant ลบข้อมูลที่อ้างถึง user ก่อน แล้วค่อยลบ wbw_user (ที่เหลือ cascade เอง)
 func (r *WBWAdminRepository) DeleteParticipant(ctx context.Context, id string) (string, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -261,7 +269,7 @@ func (r *WBWAdminRepository) DeleteParticipant(ctx context.Context, id string) (
 	var groupID *int
 	err = tx.QueryRow(ctx, `
 		SELECT u.student_id, p.group_id
-		  FROM app_user u
+		  FROM wbw_user u
 		  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 		 WHERE u.user_id = $1 AND u.role = 'participant'`, id).Scan(&studentID, &groupID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -295,7 +303,7 @@ func (r *WBWAdminRepository) DeleteParticipant(ctx context.Context, id string) (
 		}
 	}
 
-	if _, err := tx.Exec(ctx, `DELETE FROM app_user WHERE user_id = $1`, id); err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM wbw_user WHERE user_id = $1`, id); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -350,6 +358,25 @@ func (r *WBWAdminRepository) ListLogs(ctx context.Context) ([]model.AdminLog, er
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()
+}
+
+/* ---------- โปรไฟล์ตัวเอง ---------- */
+
+// UpdateOwnPhoto — ผู้เข้าร่วมเปลี่ยนรูปโปรไฟล์ตัวเอง (PATCH /wbw/me)
+//
+// จำกัดไว้แค่ photo_url โดยตั้งใจ · ฟิลด์อื่น (กลุ่ม, BIB, สำนักวิชา) เป็นของ admin
+// เปิดให้ PATCH ทั้ง profile จากฝั่งผู้ใช้ = เขาย้ายกลุ่มตัวเองข้ามการเช็คที่นั่งได้
+func (r *WBWAdminRepository) UpdateOwnPhoto(ctx context.Context, userID string, photoURL *string) error {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE participant_profile SET photo_url = $1, updated_at = now() WHERE user_id = $2`,
+		photoURL, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // LogAction บันทึก audit — กลืน error เองเหมือนของเดิม (audit ล้มไม่ควรทำ request พัง)

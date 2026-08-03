@@ -52,6 +52,11 @@ func (s *WBWAdminService) ListGroups(ctx context.Context) ([]model.Group, error)
 	return s.admin.ListGroups(ctx)
 }
 
+// UpdateOwnPhoto — เปลี่ยนรูปโปรไฟล์ตัวเอง · ส่ง photo_url เป็น null = ลบรูป
+func (s *WBWAdminService) UpdateOwnPhoto(ctx context.Context, userID string, photoURL *string) error {
+	return s.admin.UpdateOwnPhoto(ctx, userID, photoURL)
+}
+
 func (s *WBWAdminService) ListLogs(ctx context.Context) ([]model.AdminLog, error) {
 	return s.admin.ListLogs(ctx)
 }

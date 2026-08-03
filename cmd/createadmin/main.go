@@ -50,12 +50,12 @@ func main() {
 
 	var userID string
 	err = pool.QueryRow(ctx, `
-		INSERT INTO app_user (username, password_hash, role, display_name)
+		INSERT INTO wbw_user (username, password_hash, role, display_name)
 		VALUES ($1, $2, 'admin', $3)
 		ON CONFLICT (username) DO UPDATE
 		  SET password_hash = EXCLUDED.password_hash,
 		      role          = 'admin',
-		      display_name  = COALESCE(EXCLUDED.display_name, app_user.display_name)
+		      display_name  = COALESCE(EXCLUDED.display_name, wbw_user.display_name)
 		RETURNING user_id::text`,
 		username, string(hash), displayName).Scan(&userID)
 	if err != nil {

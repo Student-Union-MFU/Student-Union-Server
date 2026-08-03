@@ -31,7 +31,7 @@ func NewWBWAuthRepository(db *pgxpool.Pool) *WBWAuthRepository {
 	return &WBWAuthRepository{db: db}
 }
 
-// Register สร้าง app_user + participant_profile + health_details + consent ใน transaction เดียว
+// Register สร้าง wbw_user + participant_profile + health_details + consent ใน transaction เดียว
 // username = student_id และ role ถูกบังคับเป็น 'participant' เสมอ (client กำหนดเองไม่ได้)
 func (r *WBWAuthRepository) Register(
 	ctx context.Context,
@@ -47,7 +47,7 @@ func (r *WBWAuthRepository) Register(
 
 	var user model.AuthUser
 	err = tx.QueryRow(ctx,
-		`INSERT INTO app_user (username, password_hash, role, student_id, display_name)
+		`INSERT INTO wbw_user (username, password_hash, role, student_id, display_name)
 		 VALUES ($1, $2, 'participant', $3, $4)
 		 RETURNING user_id::text, username, role::text`,
 		studentID, passwordHash, studentID,
@@ -119,7 +119,7 @@ func (r *WBWAuthRepository) FindByUsername(ctx context.Context, username string)
 	var hash, status string
 	err := r.db.QueryRow(ctx,
 		`SELECT user_id::text, username, role::text, password_hash, status::text
-		 FROM app_user WHERE username = $1`, username,
+		 FROM wbw_user WHERE username = $1`, username,
 	).Scan(&u.UserID, &u.Username, &u.Role, &hash, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", "", nil // ไม่เจอ user — handler จะตอบ 401 เหมือนรหัสผิด (ไม่บอกใบ้)

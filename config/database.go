@@ -40,6 +40,16 @@ func ConnectDB() (*pgx.Conn, error) {
 	return conn, nil
 }
 
+// ConnectListener opens a DEDICATED connection for Postgres LISTEN/NOTIFY.
+//
+// It must not come from the pool: a listening connection blocks inside
+// WaitForNotification for as long as nothing is published, so borrowing one from
+// the pool would pin a slot forever and starve HTTP handlers. The chat long-poll
+// owns this connection and redials it itself when the link drops.
+func ConnectListener(ctx context.Context) (*pgx.Conn, error) {
+	return pgx.Connect(ctx, dsn())
+}
+
 // ConnectPool returns a connection POOL.
 //
 // Prefer this over ConnectDB for anything serving HTTP: a single *pgx.Conn is

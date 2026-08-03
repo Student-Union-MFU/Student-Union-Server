@@ -35,6 +35,11 @@ func (s *WBWNotificationService) ListPublic(ctx context.Context) ([]model.Notifi
 	return s.repo.ListPublic(ctx)
 }
 
+// MarkRead — บันทึกว่าผู้ใช้อ่านประกาศนี้แล้ว
+func (s *WBWNotificationService) MarkRead(ctx context.Context, userID string, notificationID int64) error {
+	return s.repo.MarkRead(ctx, userID, notificationID)
+}
+
 func (s *WBWNotificationService) GetDraft(ctx context.Context, userID string) (*model.Preset, error) {
 	return s.repo.GetDraft(ctx, userID)
 }

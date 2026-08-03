@@ -120,6 +120,31 @@ func main() {
 	wbwNotiService := service.NewWBWNotificationService(wbwNotiRepo)
 	wbwNotiHandler := handler.NewWBWNotificationHandler(wbwNotiService, wbwAdminService)
 
+	// แชท v2 — long-poll ผ่าน Postgres LISTEN/NOTIFY
+	// ต้องใช้ connection แยกจาก pool: connection ที่ LISTEN อยู่จะค้างรอ notification
+	// ถ้าไปยืมจาก pool จะกินสล็อตค้างตลอด handler อื่นไม่มี connection ใช้
+	chatEvents := service.NewChatEvents(pool, config.ConnectListener)
+	chatEvents.Start(context.Background())
+
+	wbwDeviceRepo := repository.NewWBWDeviceRepository(pool)
+	// ไม่มี GOOGLE_APPLICATION_CREDENTIALS = push ปิดเงียบ แชทในแอปยังครบทุกอย่าง
+	wbwPushService := service.NewWBWPushService(context.Background(), wbwDeviceRepo)
+
+	wbwChatRepo := repository.NewWBWChatRepository(pool)
+	wbwChatService := service.NewWBWChatService(wbwChatRepo, chatEvents, wbwPushService)
+	wbwChatHandler := handler.NewWBWChatHandler(wbwChatService)
+
+	wbwGroupRepo := repository.NewWBWGroupRepository(pool)
+	wbwGroupService := service.NewWBWGroupService(wbwGroupRepo, chatEvents)
+	wbwGroupHandler := handler.NewWBWGroupHandler(wbwGroupService)
+
+	wbwStaffRepo := repository.NewWBWStaffRepository(pool)
+	wbwStaffService := service.NewWBWStaffService(wbwStaffRepo)
+	wbwStaffHandler := handler.NewWBWStaffHandler(wbwStaffService)
+
+	wbwDeviceService := service.NewWBWDeviceService(wbwDeviceRepo)
+	wbwDeviceHandler := handler.NewWBWDeviceHandler(wbwDeviceService)
+
 	// ต้องผ่าน RequireAuth ก่อนเสมอ แล้วจึงเช็ค role
 	requireAuth := appmw.RequireAuth(wbwTokens)
 	requireAdmin := appmw.RequireRole("admin")
@@ -290,10 +315,42 @@ func main() {
 
 		// โปรไฟล์ของตัวเอง — ผู้เข้าร่วมที่ล็อกอินอ่านข้อมูลตัวเองได้ (ไม่ต้องเป็น admin)
 		r.With(requireAuth).Get("/me", wbwAdminHandler.Me)
+		// แก้ได้เฉพาะรูปตัวเอง — ฟิลด์อื่นเป็นของ admin (ดู UpdateOwnPhoto)
+		r.With(requireAuth).Patch("/me", wbwAdminHandler.PatchMe)
 
 		r.Route("/groups", func(r chi.Router) {
 			r.Use(requireAuth)
 			r.Get("/", wbwAdminHandler.ListGroups)
+
+			// path คงที่มาก่อน {groupId} เพื่อให้อ่านง่าย · chi จัดลำดับ static
+			// มาก่อน param ให้เองอยู่แล้ว แต่คนอ่านโค้ดไม่ควรต้องรู้เรื่องนั้น
+			r.Get("/members/index", wbwGroupHandler.MembersIndex)
+			r.Post("/leave", wbwGroupHandler.Leave)
+
+			r.Route("/{groupId}", func(r chi.Router) {
+				r.Get("/members", wbwGroupHandler.Members)
+				r.Post("/join", wbwGroupHandler.Join)
+
+				// แชท — messages คือ poll แบบเดิม, chat/sync คือ long-poll
+				r.Get("/messages", wbwChatHandler.Messages)
+				r.Post("/messages", wbwChatHandler.Send)
+				r.Get("/chat/sync", wbwChatHandler.Sync)
+				r.Post("/chat/read", wbwChatHandler.Read)
+			})
+		})
+
+		// push — แอปลงทะเบียน FCM token ตอนล็อกอิน ถอนตอน logout
+		r.Route("/devices", func(r chi.Router) {
+			r.Use(requireAuth)
+			r.Post("/register", wbwDeviceHandler.Register)
+			r.Post("/unregister", wbwDeviceHandler.Unregister)
+		})
+
+		// เจ้าหน้าที่หน้าฐาน — เช็คอินผู้เข้าร่วมจาก QR หรือ BIB
+		r.Route("/staff", func(r chi.Router) {
+			r.Use(requireAuth, requireStaff)
+			r.Get("/checkpoints", wbwStaffHandler.Checkpoints)
+			r.Post("/checkin", wbwStaffHandler.Checkin)
 		})
 
 		r.Route("/notifications", func(r chi.Router) {
@@ -306,6 +363,7 @@ func main() {
 
 				// ผู้เข้าร่วมอ่านประกาศของตัวเองได้ (all + ที่เจาะจงกลุ่ม/สำนัก/รายบุคคล)
 				r.Get("/", wbwNotiHandler.List)
+				r.Post("/{id}/read", wbwNotiHandler.MarkRead)
 
 				r.Group(func(r chi.Router) {
 					r.Use(requireStaff)
