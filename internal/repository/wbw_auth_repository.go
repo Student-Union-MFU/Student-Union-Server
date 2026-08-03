@@ -130,7 +130,7 @@ func (r *WBWAuthRepository) FindByUsername(ctx context.Context, username string)
 	return &u, hash, status, nil
 }
 
-// RegisterStaff สร้างบัญชี staff สถานะ 'pending' + staff_profile ใน transaction เดียว
+// RegisterStaff สร้างบัญชี staff สถานะ 'pending' + wbw_staff ใน transaction เดียว
 // — ล็อกอินไม่ได้จนกว่าแอดมินจะอนุมัติ
 func (r *WBWAuthRepository) RegisterStaff(
 	ctx context.Context,
@@ -147,7 +147,7 @@ func (r *WBWAuthRepository) RegisterStaff(
 
 	var u model.AuthUser
 	err = tx.QueryRow(ctx,
-		`INSERT INTO app_user (username, password_hash, role, status)
+		`INSERT INTO wbw_user (username, password_hash, role, status)
 		 VALUES ($1, $2, 'staff', 'pending')
 		 RETURNING user_id::text, username, role::text`,
 		username, passwordHash,
@@ -160,7 +160,7 @@ func (r *WBWAuthRepository) RegisterStaff(
 	}
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO staff_profile (user_id, school_id, major, staff_role)
+		`INSERT INTO wbw_staff (user_id, school_id, major, staff_role)
 		 VALUES ($1, $2, $3, $4::staff_role)`,
 		u.UserID, schoolID, major, staffRole,
 	)
