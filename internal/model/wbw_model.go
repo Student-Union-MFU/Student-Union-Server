@@ -55,10 +55,13 @@ type LoginRequest struct {
 }
 
 // StaffRegisterRequest — เจ้าหน้าที่สมัครเอง (ต้องรอแอดมินอนุมัติ)
+// ไม่มี display_name แล้ว — ถามสำนักวิชา/สาขา/หน้าที่ในงานแทน
 type StaffRegisterRequest struct {
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-	DisplayName string `json:"display_name"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`
+	SchoolID  *int   `json:"school_id"`
+	Major     string `json:"major"`
+	StaffRole string `json:"staff_role"`
 }
 
 // StaffRequest — คำขอเป็นเจ้าหน้าที่ที่ยังรออนุมัติ (แสดงในแผงผู้ดูแล)
@@ -67,6 +70,10 @@ type StaffRequest struct {
 	Username    string  `json:"username"`
 	Role        string  `json:"role"`
 	DisplayName *string `json:"display_name"`
+	SchoolID    *int    `json:"school_id"`
+	SchoolName  *string `json:"school_name"`
+	Major       *string `json:"major"`
+	StaffRole   *string `json:"staff_role"`
 	Status      string  `json:"status"`
 	Created     *string `json:"created"`
 }

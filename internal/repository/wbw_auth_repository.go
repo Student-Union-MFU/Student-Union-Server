@@ -130,19 +130,45 @@ func (r *WBWAuthRepository) FindByUsername(ctx context.Context, username string)
 	return &u, hash, status, nil
 }
 
-// RegisterStaff สร้างบัญชี staff สถานะ 'pending' — ล็อกอินไม่ได้จนกว่าแอดมินจะอนุมัติ
-func (r *WBWAuthRepository) RegisterStaff(ctx context.Context, username, passwordHash string, displayName *string) (*model.AuthUser, error) {
+// RegisterStaff สร้างบัญชี staff สถานะ 'pending' + staff_profile ใน transaction เดียว
+// — ล็อกอินไม่ได้จนกว่าแอดมินจะอนุมัติ
+func (r *WBWAuthRepository) RegisterStaff(
+	ctx context.Context,
+	username, passwordHash string,
+	schoolID int,
+	major *string,
+	staffRole string,
+) (*model.AuthUser, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	var u model.AuthUser
-	err := r.db.QueryRow(ctx,
-		`INSERT INTO wbw_user (username, password_hash, role, status, display_name)
-		 VALUES ($1, $2, 'staff', 'pending', $3)
+	err = tx.QueryRow(ctx,
+		`INSERT INTO app_user (username, password_hash, role, status)
+		 VALUES ($1, $2, 'staff', 'pending')
 		 RETURNING user_id::text, username, role::text`,
-		username, passwordHash, displayName,
+		username, passwordHash,
 	).Scan(&u.UserID, &u.Username, &u.Role)
 	if err != nil {
 		if IsPGCode(err, "23505") {
 			return nil, ErrDuplicate
 		}
+		return nil, err
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO staff_profile (user_id, school_id, major, staff_role)
+		 VALUES ($1, $2, $3, $4::staff_role)`,
+		u.UserID, schoolID, major, staffRole,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return &u, nil
