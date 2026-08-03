@@ -21,7 +21,24 @@ var (
 	ErrBadCredentials  = errors.New("bad credentials")
 	ErrMissingFields   = errors.New("missing fields")
 	ErrPendingApproval = errors.New("pending approval")
+	ErrBadStaffRole    = errors.New("bad staff role")
 )
+
+// หน้าที่ของเจ้าหน้าที่ — ต้องตรงกับ enum staff_role ใน DB (migration 000009)
+// และ STAFF_ROLES ฝั่งเว็บ (components/register/mfu-data.ts)
+var validStaffRoles = []string{
+	"registration", "checkpoint", "backstage", "security", "medical",
+	"welfare", "logistics", "media", "guide", "other",
+}
+
+func isValidStaffRole(r string) bool {
+	for _, v := range validStaffRoles {
+		if v == r {
+			return true
+		}
+	}
+	return false
+}
 
 // นักศึกษาชั้นปีที่ 1 — 10 หลัก ขึ้นต้น 693
 var studentIDRe = regexp.MustCompile(`^693\d{7}$`)
@@ -94,15 +111,22 @@ func (s *WBWAuthService) RegisterStaff(ctx context.Context, req model.StaffRegis
 	if len(req.Password) < 8 {
 		return nil, ErrShortPassword
 	}
+	// สำนักวิชาบังคับ · สาขาไม่บังคับ (บางสำนักไม่มีให้เลือกในฟอร์ม)
+	if req.SchoolID == nil {
+		return nil, ErrMissingFields
+	}
+	if !isValidStaffRole(req.StaffRole) {
+		return nil, ErrBadStaffRole
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcryptCost)
 	if err != nil {
 		return nil, err
 	}
-	var displayName *string
-	if d := strings.TrimSpace(req.DisplayName); d != "" {
-		displayName = &d
+	var major *string
+	if m := strings.TrimSpace(req.Major); m != "" {
+		major = &m
 	}
-	user, err := s.repo.RegisterStaff(ctx, username, string(hash), displayName)
+	user, err := s.repo.RegisterStaff(ctx, username, string(hash), *req.SchoolID, major, req.StaffRole)
 	if err != nil {
 		if errors.Is(err, repository.ErrDuplicate) {
 			return nil, ErrDuplicateUser
