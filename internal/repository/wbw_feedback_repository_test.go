@@ -98,7 +98,7 @@ func openTestDB(t *testing.T) (*pgxpool.Pool, string) {
 
 	var participantID string
 	if err := pool.QueryRow(ctx,
-		`SELECT user_id::text FROM app_user WHERE username = $1`, testUsername).Scan(&participantID); err != nil {
+		`SELECT user_id::text FROM wbw_user WHERE username = $1`, testUsername).Scan(&participantID); err != nil {
 		t.Fatalf("ไม่มีบัญชีทดสอบ %s ในฐานข้อมูลนี้ (%v)", testUsername, err)
 	}
 

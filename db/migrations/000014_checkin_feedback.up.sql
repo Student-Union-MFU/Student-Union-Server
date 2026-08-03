@@ -4,7 +4,7 @@
 -- ตอบด้วย LEFT JOIN สถานะจึงเพี้ยนจากความจริงไม่ได้ตามนิยาม
 CREATE TABLE IF NOT EXISTS checkin_feedback (
   id             BIGSERIAL PRIMARY KEY,
-  participant_id UUID NOT NULL REFERENCES app_user(user_id)         ON DELETE CASCADE,
+  participant_id UUID NOT NULL REFERENCES wbw_user(user_id)         ON DELETE CASCADE,
   checkpoint_id  INT  NOT NULL REFERENCES checkpoint(checkpoint_id) ON DELETE CASCADE,
   rating         SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 3), -- 1 ไม่ชอบ · 2 เฉยๆ · 3 ชอบ
   comment        TEXT,
