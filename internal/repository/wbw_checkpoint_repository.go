@@ -240,11 +240,16 @@ func (r *WBWCheckpointRepository) DeleteUser(ctx context.Context, id string) (st
 
 // ListStaffRequests คืนเฉพาะบัญชี staff ที่สถานะ 'pending'
 func (r *WBWCheckpointRepository) ListStaffRequests(ctx context.Context) ([]model.StaffRequest, error) {
+	// LEFT JOIN: บัญชีที่ผู้ดูแลสร้างเองไม่มีแถวใน staff_profile
 	rows, err := r.db.Query(ctx, `
-		SELECT user_id::text, username, role::text, display_name, status::text, created_at::text
-		  FROM wbw_user
-		 WHERE role IN ('staff','admin') AND status = 'pending'
-		 ORDER BY created_at`)
+		SELECT u.user_id::text, u.username, u.role::text, u.display_name,
+		       sp.school_id, s.name, sp.major, sp.staff_role::text,
+		       u.status::text, u.created_at::text
+		  FROM app_user u
+		  LEFT JOIN staff_profile sp ON sp.user_id = u.user_id
+		  LEFT JOIN school s         ON s.school_id = sp.school_id
+		 WHERE u.role IN ('staff','admin') AND u.status = 'pending'
+		 ORDER BY u.created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +258,11 @@ func (r *WBWCheckpointRepository) ListStaffRequests(ctx context.Context) ([]mode
 	reqs := []model.StaffRequest{}
 	for rows.Next() {
 		var s model.StaffRequest
-		if err := rows.Scan(&s.ID, &s.Username, &s.Role, &s.DisplayName, &s.Status, &s.Created); err != nil {
+		if err := rows.Scan(
+			&s.ID, &s.Username, &s.Role, &s.DisplayName,
+			&s.SchoolID, &s.SchoolName, &s.Major, &s.StaffRole,
+			&s.Status, &s.Created,
+		); err != nil {
 			return nil, err
 		}
 		reqs = append(reqs, s)
