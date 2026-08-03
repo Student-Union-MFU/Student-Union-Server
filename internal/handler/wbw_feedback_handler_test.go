@@ -172,6 +172,50 @@ func TestSubmitFeedbackAlreadyAnsweredReturns409WithExistingRow(t *testing.T) {
 	}
 }
 
+/*
+สองเทสถัดไปตรึง **รูปร่างของ body** ไม่ใช่แค่ status — เพราะแอปใช้ body เป็นตัวตัดสินใจไปแล้ว
+
+Cloudflare หน้า api.studentunion.social ตอบ 403 ได้เองจาก WAF/firewall rule โดยที่ request
+ไม่เคยถึง origin เลย ถ้าแอปอ่านแค่ status มันจะแปล 403 นั้นเป็น "ยังไม่ได้เช็คอินฐานนี้" แล้ว
+**ลบคิวความเห็นของฐานนั้นทิ้งทั้งฐาน** ทั้งที่ผู้ใช้เพิ่งเห็นข้อความ "ส่งความเห็นแล้ว ขอบคุณ"
+
+แอปจึงถือ 403/409 เป็นสถานะปลายทางเฉพาะเมื่อ body เป็นของ origin จริง (ดู
+APIClient.submitFeedback ฝั่ง iOS) — คีย์ที่มันมองหาคือสัญญาที่ตรึงไว้ที่นี่ ถ้าใครเปลี่ยนรูป
+body ตรงนี้โดยไม่แก้ฝั่งแอปด้วย ผลไม่ใช่ข้อความเพี้ยน แต่คือคิวค้างถาวรที่ไม่มีวันส่งได้
+*/
+
+// 403 ต้องเป็น error envelope {"error":"..."} ที่ข้อความไม่ว่าง
+func TestSubmitFeedbackForbiddenBodyIsErrorEnvelope(t *testing.T) {
+	repo := &fakeFeedbackRepo{err: repository.ErrNotCheckedIn}
+	rec := postFeedback(t, repo, validBody, true)
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("403 ต้องมี body เป็น JSON object: %v (%s)", err, rec.Body.String())
+	}
+	msg, ok := body["error"].(string)
+	if !ok || msg == "" {
+		t.Fatalf("403 ต้องมีคีย์ error ที่เป็นสตริงไม่ว่าง — แอปใช้คีย์นี้แยก 403 ของเราออกจาก "+
+			"403 ของ Cloudflare ได้ %s", rec.Body.String())
+	}
+}
+
+// 409 ต้องเป็น "แถวความเห็นเดิม" (มี checkpoint_id) ไม่ใช่ envelope และไม่ใช่ body ว่าง
+func TestSubmitFeedbackConflictBodyIsFeedbackRow(t *testing.T) {
+	existing := &model.CheckinFeedback{ID: 42, CheckpointID: 7, Rating: 2}
+	repo := &fakeFeedbackRepo{err: repository.ErrAlreadyAnswered{Existing: existing}}
+	rec := postFeedback(t, repo, validBody, true)
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("409 ต้องมี body เป็น JSON object: %v (%s)", err, rec.Body.String())
+	}
+	if _, ok := body["checkpoint_id"]; !ok {
+		t.Fatalf("409 ต้องมีคีย์ checkpoint_id — แอปใช้คีย์นี้ยืนยันว่า 409 มาจาก origin จริง "+
+			"ไม่ใช่จาก edge ได้ %s", rec.Body.String())
+	}
+}
+
 // error อื่นที่ไม่รู้จัก = 500 · ฝั่งแอปหลังแก้รอบนี้ถือว่า 5xx retry ได้และเก็บ draft ไว้
 // ในคิว (ดู FeedbackStore ฝั่ง iOS) ถ้าหลุดไปตอบ 4xx ตรงนี้ คำตอบของผู้ใช้จะถูกทิ้ง
 func TestSubmitFeedbackUnknownErrorReturns500(t *testing.T) {

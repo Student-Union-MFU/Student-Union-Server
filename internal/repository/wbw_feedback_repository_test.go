@@ -59,8 +59,15 @@ const (
 	testCheckpointServicePoint = 9
 )
 
-// openTestDB — คืน pool + participant uuid · skip ทั้งเทสเมื่อยังไม่ได้เปิดสวิตช์
-// หรือฐานข้อมูล/ข้อมูลตั้งต้นไม่พร้อม (ดีกว่าฟ้อง fail ให้คนที่แค่รัน go test เฉยๆ)
+// openTestDB — คืน pool + participant uuid
+//
+// **skip ได้ทางเดียวเท่านั้น: ยังไม่ได้เปิดสวิตช์** · คนที่รัน `go test ./...` เปล่าๆ ไม่ได้ขอ
+// อะไรจากฐานข้อมูล การข้ามให้เขาจึงซื่อสัตย์
+//
+// แต่พอ WBW_DB_TESTS=1 คือการบอกว่า "ฉันขอให้เทสชุดนี้รันจริง" — ตั้งแต่จุดนั้นไปทุกความล้มเหลว
+// ต้อง fail ไม่ใช่ skip · เดิม skip หมดทั้ง ต่อไม่ติด/ping ไม่ผ่าน/ไม่มีบัญชีทดสอบ/ข้อมูลตั้งต้น
+// ไม่ตรง ซึ่งทำให้ checkout ที่ไม่มี .env รันแล้วขึ้น `ok` ทั้งที่ไม่ได้รันเทสสักตัว (เกิดจริง
+// ระหว่างรีวิว) — เทสที่รายงานว่าผ่านโดยไม่ได้ทำอะไรเลยแย่กว่าไม่มีเทส เพราะมันกินความเชื่อใจไปฟรีๆ
 func openTestDB(t *testing.T) (*pgxpool.Pool, string) {
 	t.Helper()
 	if os.Getenv("WBW_DB_TESTS") != "1" {
@@ -80,18 +87,19 @@ func openTestDB(t *testing.T) (*pgxpool.Pool, string) {
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		t.Skipf("ข้าม: ต่อฐานข้อมูลไม่ได้ (%v)", err)
+		t.Fatalf("เปิดสวิตช์ WBW_DB_TESTS=1 ไว้แล้วแต่ต่อฐานข้อมูลไม่ได้ (%v)", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		t.Skipf("ข้าม: ping ฐานข้อมูลไม่ผ่าน (%v)", err)
+		t.Fatalf("เปิดสวิตช์ WBW_DB_TESTS=1 ไว้แล้วแต่ ping ฐานข้อมูลไม่ผ่าน (%v) — "+
+			"ถ้าไม่มี .env ที่ root ให้ตั้ง WBW_TEST_DSN เอง", err)
 	}
 	t.Cleanup(pool.Close)
 
 	var participantID string
 	if err := pool.QueryRow(ctx,
 		`SELECT user_id::text FROM app_user WHERE username = $1`, testUsername).Scan(&participantID); err != nil {
-		t.Skipf("ข้าม: ไม่มีบัญชีทดสอบ %s (%v)", testUsername, err)
+		t.Fatalf("ไม่มีบัญชีทดสอบ %s ในฐานข้อมูลนี้ (%v)", testUsername, err)
 	}
 
 	// ข้อมูลตั้งต้นต้องตรงกับที่ค่าคงที่ข้างบนสมมติไว้ ไม่งั้นผลเทสตีความไม่ได้
@@ -109,9 +117,11 @@ func assertCheckedIn(t *testing.T, pool *pgxpool.Pool, participantID string, che
 			SELECT 1 FROM check_in ci JOIN checkpoint c ON c.checkpoint_id = ci.checkpoint_id
 			 WHERE ci.participant_id = $1::uuid AND ci.checkpoint_id = $2 AND c.requires_checkin = $3
 		)`, participantID, checkpointID, requiresCheckin).Scan(&ok)
+	// เรียกจาก openTestDB หลังผ่านสวิตช์มาแล้วเท่านั้น — ข้อมูลตั้งต้นไม่ตรงคือ fail ไม่ใช่ skip
+	// (ถ้า skip ตรงนี้ ผลที่ได้คือ `ok` ทั้งที่ไม่มีการยืนยันอะไรเลย)
 	if err != nil || !ok {
-		t.Skipf("ข้าม: ข้อมูลตั้งต้นไม่ตรง — ฐาน %d ต้องมีแถว check_in ของ %s และ requires_checkin = %v",
-			checkpointID, testUsername, requiresCheckin)
+		t.Fatalf("ข้อมูลตั้งต้นไม่ตรง — ฐาน %d ต้องมีแถว check_in ของ %s และ requires_checkin = %v (err=%v)",
+			checkpointID, testUsername, requiresCheckin, err)
 	}
 }
 
