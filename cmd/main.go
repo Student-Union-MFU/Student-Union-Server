@@ -70,9 +70,22 @@ func main() {
 		slog.Info("DB CONNECTED")
 	}
 
+	// ใช้ connection pool ไม่ใช่ *pgx.Conn เดี่ยว — conn เดียวไม่ปลอดภัยเมื่อมี request พร้อมกัน
+	pool, err := config.ConnectPool(context.Background())
+	if err != nil {
+		slog.Error("pool connection failed", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+	slog.Info("POOL CONNECTED")
+
 	eventRepository := repository.NewEventRepository(db)
 	eventService := service.NewEventService(eventRepository)
 	eventHandler := handler.NewEventHandler(eventService)
+
+	boothRepository := repository.NewBoothRepository(pool)
+	boothService := service.NewBoothService(boothRepository)
+	boothHandler := handler.NewBoothHandler(boothService)
 
 	userRepository := repository.NewUserRepository(db)
 	userService := service.NewUserService(userRepository)
@@ -92,15 +105,6 @@ func main() {
 	leaderboardHandler := handler.NewLeaderboardHandler(leaderboardService)
 
 	// ---------- WBW (เดินรอบดอย) ----------
-	// ใช้ connection pool ไม่ใช่ *pgx.Conn เดี่ยว — conn เดียวไม่ปลอดภัยเมื่อมี request พร้อมกัน
-	pool, err := config.ConnectPool(context.Background())
-	if err != nil {
-		slog.Error("WBW pool connection failed", "err", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
-	slog.Info("WBW POOL CONNECTED")
-
 	wbwTokens := service.NewWBWTokenService()
 
 	wbwAuthRepo := repository.NewWBWAuthRepository(pool)
@@ -127,37 +131,93 @@ func main() {
 	})
 
 	r.Route("/su-server", func(r chi.Router) {
-		r.Route("/events", func(r chi.Router) {
-			r.Get("/", eventHandler.GetAllEvents)
-			r.Get("/{id}", eventHandler.GetOneEvents)
-			r.Post("/", eventHandler.CreateOneEvent)
-			r.Put("/{id}", eventHandler.UpdateOneEvent)
-			r.Delete("/{id}", eventHandler.DeleteOneEvents)
-		})
-		r.Route("/users", func(r chi.Router) {
-			r.Get("/{id}", userHandler.GetUserByID)
-			r.Get("/email/{email}", userHandler.GetUserByEmail)
-			r.Post("/insert", userHandler.InsertUser)
-			r.Post("/upsert", userHandler.UpsertUser)
-			r.Patch("/{id}", userHandler.UpdateUser)
-			r.Delete("/{id}", eventHandler.DeleteOneEvents)
-		})
+		// Public: the only way to obtain a token, plus the reads another
+		// client is known to call. Closing those is a following round, once
+		// the Android client's owner has confirmed what he uses.
 		r.Route("/auth", func(r chi.Router) {
 			r.Get("/google", oauthHandler.GoogleLogin)
 			r.Get("/google/callback", oauthHandler.GoogleCallback)
 			r.Post("/google/verify", oauthHandler.GoogleVerify)
 		})
-		r.Route("/steps", func(r chi.Router) {
-			r.Get("/{userID}", stepHandler.GetStepsByUserID)
-			r.Get("/{userID}/range?from=2026-06-01&to=2026-08-01", stepHandler.GetStepsByDateRange)
-			r.Post("/sync", stepHandler.SyncSteps)
-			r.Post("/sync/bulk", stepHandler.SyncManySteps)
+
+		r.Route("/events", func(r chi.Router) {
+			r.Get("/", eventHandler.GetAllEvents)
+			r.Get("/{id}", eventHandler.GetOneEvents)
+
+			r.Group(func(r chi.Router) {
+				r.Use(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff())
+				r.Post("/", eventHandler.CreateOneEvent)
+				r.Put("/{id}", eventHandler.UpdateOneEvent)
+				r.Delete("/{id}", eventHandler.DeleteOneEvents)
+			})
 		})
+
+		r.Route("/booths", func(r chi.Router) {
+			r.Use(appmw.RequireSUAuth(jwtService))
+			r.Get("/", boothHandler.GetAllBooths)
+		})
+
+		r.Route("/users", func(r chi.Router) {
+			// Auth is attached per-route (not via r.Use on this subrouter)
+			// so that DELETE /{id} — no longer registered on any verb below —
+			// falls through to chi's native 405, instead of being intercepted
+			// by the auth middleware before chi ever gets to ask "does this
+			// verb exist here", which would answer 401 and make it look like
+			// the removed route were still guarded rather than gone. /events,
+			// /steps and /leaderboard avoid this the other way, by nesting
+			// their auth-only verbs inside an r.Group, which shares the
+			// parent's routing tree instead of wrapping the whole subrouter.
+
+			// A record that belongs to one person.
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSelfOrStaff("id")).Get("/{id}", userHandler.GetUserByID)
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSelfOrStaff("id")).Patch("/{id}", userHandler.UpdateUser)
+
+			// Ownership cannot be expressed against an email, and knowing an
+			// address should not hand over the profile behind it.
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff()).Get("/email/{email}", userHandler.GetUserByEmail)
+
+			// DELETE /{id} is gone. It pointed at eventHandler.DeleteOneEvents
+			// and deleted events; UserHandler has no delete method to re-point
+			// it at, so this was a route added with nothing behind it. Writing
+			// that handler is a different project: nothing defines what becomes
+			// of a deleted student's check-ins or step records.
+
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff()).Post("/insert", userHandler.InsertUser)
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff()).Post("/upsert", userHandler.UpsertUser)
+		})
+
+		r.Route("/steps", func(r chi.Router) {
+			// A step history is a day-by-day record of where one named
+			// person was. Paired with the public leaderboard (which hands
+			// out id-to-name), a bare token would turn "anyone signed in"
+			// into "read anyone's movements" — so these require the caller
+			// to be the subject or staff, same as /users/{id}.
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSelfOrStaff("userID")).Get("/{userID}", stepHandler.GetStepsByUserID)
+			r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSelfOrStaff("userID")).Get("/{userID}/range", stepHandler.GetStepsByDateRange)
+
+			r.Group(func(r chi.Router) {
+				// Still trusts a body-supplied user_id — see the "critical"
+				// finding above the users routes. Deriving it from claims
+				// instead means changing SyncSteps/SyncManySteps, which is
+				// a separate piece of work.
+				r.Use(appmw.RequireSUAuth(jwtService))
+				r.Post("/sync", stepHandler.SyncSteps)
+				r.Post("/sync/bulk", stepHandler.SyncManySteps)
+			})
+		})
+
 		r.Route("/leaderboard", func(r chi.Router) {
+			// Public and deliberately left that way: a leaderboard is the
+			// campaign's front page, and far likelier to have a live caller
+			// than the routes below it.
 			r.Get("/", leaderboardHandler.GetLeaderboard)
 			r.Get("/{userID}", leaderboardHandler.GetUserRank)
-			r.Post("/update", leaderboardHandler.UpdateEntry)
-			r.Post("/reset", leaderboardHandler.Reset)
+
+			r.Group(func(r chi.Router) {
+				r.Use(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff())
+				r.Post("/update", leaderboardHandler.UpdateEntry)
+				r.Post("/reset", leaderboardHandler.Reset)
+			})
 		})
 	})
 

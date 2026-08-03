@@ -49,6 +49,12 @@ services:
   backend:
     build: .
     container_name: su-server
+    # Without this the backend is the only long-lived service that does NOT come
+    # back after a host or docker-daemon restart — database (always) and
+    # cloudflared (unless-stopped) do. That asymmetry took the API down for 28h
+    # on 2026-07-27: the tunnel stayed up and served 502 with nothing crashed.
+    # "unless-stopped" and not "always" so an explicit `docker stop` still sticks.
+    restart: unless-stopped
     # Bound to loopback so the backend is only reachable through the tunnel or
     # from the host, never directly on a public interface. A bare "8080:8080"
     # publishes it unencrypted on every interface.

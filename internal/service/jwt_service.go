@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -21,6 +22,17 @@ type JWTClaims struct {
 
 func NewJWTService() *JWTService {
 	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		// golang-jwt's HMAC signer accepts a zero-length key, so an empty
+		// secret does not fail closed — it signs and verifies happily,
+		// which means anyone can forge a token. Before RequireSUAuth
+		// existed that gated nothing; now it is the entire boundary on
+		// every protected SU route. Refusing to start beats running wide
+		// open, and unlike WBW's own fallback we deliberately do not
+		// paper over the misconfiguration with a default value.
+		slog.Error("JWT_SECRET is empty — refusing to start with a forgeable signing key")
+		os.Exit(1)
+	}
 
 	// JWT_EXPIRY is a duration string ("24h", "30m"), not a bare number of
 	// hours. This previously read JWT_EXPIRY_HOURS with Atoi, which no .env

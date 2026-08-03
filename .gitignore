@@ -1,1 +1,7 @@
 .env
+# Anything derived from it — backups, per-machine overrides — carries the same
+# secrets. A bare `.env` line does not match `.env.bak-2026-07-30`, which is how
+# one such file sat untracked and one `git add -A` away from GitHub.
+.env.*
+# …except the committed template, which holds no values.
+!.env.example
