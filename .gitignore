@@ -5,3 +5,12 @@
 .env.*
 # …except the committed template, which holds no values.
 !.env.example
+
+# service account ของ Firebase — ข้างในเป็น private key จริง ห้ามขึ้น git เด็ดขาด
+# ไฟล์วางในโฟลเดอร์นี้แล้ว compose mount เข้า container ให้เอง (อ่านอย่างเดียว)
+#
+# ต้องเป็น `secrets/*` ไม่ใช่ `secrets/` — git ไม่เดินเข้าไปในโฟลเดอร์ที่ถูก ignore
+# ทั้งก้อน บรรทัด `!` ข้างล่างจึงไม่มีผลเลยถ้าเขียนแบบหลัง
+secrets/*
+# …ยกเว้นไฟล์อธิบาย ซึ่งไม่มีค่าอะไรอยู่ข้างใน
+!secrets/.gitkeep
