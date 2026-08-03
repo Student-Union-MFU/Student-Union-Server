@@ -240,13 +240,13 @@ func (r *WBWCheckpointRepository) DeleteUser(ctx context.Context, id string) (st
 
 // ListStaffRequests คืนเฉพาะบัญชี staff ที่สถานะ 'pending'
 func (r *WBWCheckpointRepository) ListStaffRequests(ctx context.Context) ([]model.StaffRequest, error) {
-	// LEFT JOIN: บัญชีที่ผู้ดูแลสร้างเองไม่มีแถวใน staff_profile
+	// LEFT JOIN: บัญชีที่ผู้ดูแลสร้างเองไม่มีแถวใน wbw_staff
 	rows, err := r.db.Query(ctx, `
 		SELECT u.user_id::text, u.username, u.role::text, u.display_name,
 		       sp.school_id, s.name, sp.major, sp.staff_role::text,
 		       u.status::text, u.created_at::text
-		  FROM app_user u
-		  LEFT JOIN staff_profile sp ON sp.user_id = u.user_id
+		  FROM wbw_user u
+		  LEFT JOIN wbw_staff sp ON sp.user_id = u.user_id
 		  LEFT JOIN school s         ON s.school_id = sp.school_id
 		 WHERE u.role IN ('staff','admin') AND u.status = 'pending'
 		 ORDER BY u.created_at`)
