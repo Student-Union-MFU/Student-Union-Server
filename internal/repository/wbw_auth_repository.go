@@ -31,7 +31,7 @@ func NewWBWAuthRepository(db *pgxpool.Pool) *WBWAuthRepository {
 	return &WBWAuthRepository{db: db}
 }
 
-// Register สร้าง app_user + participant_profile + health_details + consent ใน transaction เดียว
+// Register สร้าง wbw_user + participant_profile + health_details + consent ใน transaction เดียว
 // username = student_id และ role ถูกบังคับเป็น 'participant' เสมอ (client กำหนดเองไม่ได้)
 func (r *WBWAuthRepository) Register(
 	ctx context.Context,
@@ -47,7 +47,7 @@ func (r *WBWAuthRepository) Register(
 
 	var user model.AuthUser
 	err = tx.QueryRow(ctx,
-		`INSERT INTO app_user (username, password_hash, role, student_id, display_name)
+		`INSERT INTO wbw_user (username, password_hash, role, student_id, display_name)
 		 VALUES ($1, $2, 'participant', $3, $4)
 		 RETURNING user_id::text, username, role::text`,
 		studentID, passwordHash, studentID,
@@ -119,7 +119,7 @@ func (r *WBWAuthRepository) FindByUsername(ctx context.Context, username string)
 	var hash, status string
 	err := r.db.QueryRow(ctx,
 		`SELECT user_id::text, username, role::text, password_hash, status::text
-		 FROM app_user WHERE username = $1`, username,
+		 FROM wbw_user WHERE username = $1`, username,
 	).Scan(&u.UserID, &u.Username, &u.Role, &hash, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", "", nil // ไม่เจอ user — handler จะตอบ 401 เหมือนรหัสผิด (ไม่บอกใบ้)
@@ -130,19 +130,45 @@ func (r *WBWAuthRepository) FindByUsername(ctx context.Context, username string)
 	return &u, hash, status, nil
 }
 
-// RegisterStaff สร้างบัญชี staff สถานะ 'pending' — ล็อกอินไม่ได้จนกว่าแอดมินจะอนุมัติ
-func (r *WBWAuthRepository) RegisterStaff(ctx context.Context, username, passwordHash string, displayName *string) (*model.AuthUser, error) {
+// RegisterStaff สร้างบัญชี staff สถานะ 'pending' + wbw_staff ใน transaction เดียว
+// — ล็อกอินไม่ได้จนกว่าแอดมินจะอนุมัติ
+func (r *WBWAuthRepository) RegisterStaff(
+	ctx context.Context,
+	username, passwordHash string,
+	schoolID int,
+	major *string,
+	staffRole string,
+) (*model.AuthUser, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	var u model.AuthUser
-	err := r.db.QueryRow(ctx,
-		`INSERT INTO app_user (username, password_hash, role, status, display_name)
-		 VALUES ($1, $2, 'staff', 'pending', $3)
+	err = tx.QueryRow(ctx,
+		`INSERT INTO wbw_user (username, password_hash, role, status)
+		 VALUES ($1, $2, 'staff', 'pending')
 		 RETURNING user_id::text, username, role::text`,
-		username, passwordHash, displayName,
+		username, passwordHash,
 	).Scan(&u.UserID, &u.Username, &u.Role)
 	if err != nil {
 		if IsPGCode(err, "23505") {
 			return nil, ErrDuplicate
 		}
+		return nil, err
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO wbw_staff (user_id, school_id, major, staff_role)
+		 VALUES ($1, $2, $3, $4::staff_role)`,
+		u.UserID, schoolID, major, staffRole,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return &u, nil

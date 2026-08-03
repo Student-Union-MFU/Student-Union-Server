@@ -49,7 +49,7 @@ func (r *WBWNotificationRepository) ListSent(ctx context.Context) ([]model.Notif
 		       (SELECT count(*) FROM notification_read nr
 		         WHERE nr.notification_id = n.id AND nr.read_at IS NOT NULL)::text
 		  FROM notification n
-		  LEFT JOIN app_user u ON u.user_id = n.created_by
+		  LEFT JOIN wbw_user u ON u.user_id = n.created_by
 		 ORDER BY n.created_at DESC LIMIT 100`)
 	if err != nil {
 		return nil, err
@@ -108,7 +108,7 @@ func (r *WBWNotificationRepository) ListPublic(ctx context.Context) ([]model.Not
 		       n.created_at::text, n.expires_at::text,
 		       COALESCE(u.display_name, u.username) AS creator_name
 		  FROM notification n
-		  LEFT JOIN app_user u ON u.user_id = n.created_by
+		  LEFT JOIN wbw_user u ON u.user_id = n.created_by
 		 WHERE n.audience = 'all'
 		   AND (n.expires_at IS NULL OR n.expires_at > now())
 		 ORDER BY n.created_at DESC LIMIT 100`)

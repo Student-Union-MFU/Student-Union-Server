@@ -8,6 +8,7 @@ import (
 
 	"su-server/internal/middleware"
 	"su-server/internal/model"
+	"su-server/internal/repository"
 	"su-server/internal/service"
 )
 
@@ -57,11 +58,15 @@ func (h *WBWAuthHandler) RegisterStaff(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrMissingFields):
-			middleware.WriteError(w, http.StatusBadRequest, "กรุณากรอกชื่อผู้ใช้")
+			middleware.WriteError(w, http.StatusBadRequest, "กรุณากรอกชื่อผู้ใช้และเลือกสำนักวิชา")
 		case errors.Is(err, service.ErrShortPassword):
 			middleware.WriteError(w, http.StatusBadRequest, "รหัสผ่านต้องยาวอย่างน้อย 8 ตัว")
+		case errors.Is(err, service.ErrBadStaffRole):
+			middleware.WriteError(w, http.StatusBadRequest, "กรุณาเลือกหน้าที่ในงาน")
 		case errors.Is(err, service.ErrDuplicateUser):
 			middleware.WriteError(w, http.StatusConflict, "ชื่อผู้ใช้นี้มีอยู่แล้ว")
+		case repository.IsPGCode(err, "23503"):
+			middleware.WriteError(w, http.StatusBadRequest, "ไม่พบสำนักวิชาที่เลือก")
 		default:
 			slog.Error("wbw staff register failed", "err", err)
 			middleware.WriteError(w, http.StatusInternalServerError, "สมัครไม่สำเร็จ")

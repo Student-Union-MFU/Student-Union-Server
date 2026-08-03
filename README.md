@@ -1,4 +1,4 @@
-# SU Server
+# Student Union Main Server
 Backend server for Mae Fah Luang University Student Union services, built with Go and PostgreSQL.
 
 > 🚧 This project is currently under active development.
