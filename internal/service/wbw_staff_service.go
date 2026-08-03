@@ -25,13 +25,35 @@ var (
 // ไม่ใช่ยึดไว้ตลอดไปทีละ goroutine ต่อการสแกนหนึ่งครั้ง (วันงานจริงสแกนกันเป็นพันครั้ง)
 const notifyFeedbackTimeout = 8 * time.Second
 
-type WBWStaffService struct {
-	repo *repository.WBWStaffRepository
-	noti *WBWNotificationService
-	push *WBWPushService
+// สาม interface ข้างล่างนี้คือหน้าตาที่ WBWStaffService ใช้จริงจาก repo/noti/push
+// ประกาศไว้ฝั่งผู้ใช้ (ไม่ใช่ฝั่งผู้ให้บริการ) ตามธรรมเนียม Go — ของจริงทั้งสามตัว
+// (*repository.WBWStaffRepository, *WBWNotificationService, *WBWPushService) เข้าได้เองโดย
+// ไม่ต้องประกาศอะไรเพิ่ม cmd/main.go จึงไม่ต้องแก้เลย
+//
+// มีไว้เพื่อ "แจ้งเตือนต้องเกิดเฉพาะตอน already_checked_in = false" ตามที่ spec สั่งให้เทส
+// (docs/superpowers/specs/2026-08-02-checkin-feedback-design.md) — เดิมทั้งสามฟิลด์เป็น
+// struct concrete ที่ผูกกับ *pgxpool.Pool ทั้งเส้น เทสเงื่อนไขนี้ได้ทางเดียวคือมีฐานข้อมูลจริง
+type staffRepo interface {
+	Checkpoints(ctx context.Context, userID, role string) ([]model.StaffCheckpoint, error)
+	Checkin(ctx context.Context, staffID string, checkpointID int, qrToken *string, bib *int) (*model.CheckinResult, error)
+	CheckpointName(ctx context.Context, checkpointID int) string
 }
 
-func NewWBWStaffService(repo *repository.WBWStaffRepository, noti *WBWNotificationService, push *WBWPushService) *WBWStaffService {
+type feedbackNotifier interface {
+	Create(ctx context.Context, req model.NotificationRequest, createdBy string) (*model.Notification, error)
+}
+
+type userPusher interface {
+	SendUserPush(ctx context.Context, userID, title, body string, data map[string]string)
+}
+
+type WBWStaffService struct {
+	repo staffRepo
+	noti feedbackNotifier
+	push userPusher
+}
+
+func NewWBWStaffService(repo staffRepo, noti feedbackNotifier, push userPusher) *WBWStaffService {
 	return &WBWStaffService{repo: repo, noti: noti, push: push}
 }
 
@@ -73,7 +95,9 @@ func (s *WBWStaffService) Checkin(ctx context.Context, staffID string, req model
 // notifyFeedback — แจ้งผู้เข้าร่วมว่าเช็คอินแล้วและขอความเห็นต่อฐาน · fire-and-forget
 //
 // รูปแบบเดียวกับ SendChatPush: context.WithoutCancel ตัด ctx ออกจาก request (ของเดิม
-// ถูกยกเลิกทันทีที่ /staff/checkin ตอบ response เสร็จ) แล้วยิงใน goroutine แยก ครอบ
+// ถูกยกเลิกทันทีที่ /staff/checkin ตอบ response เสร็จ) แล้วยิงใน goroutine แยกผ่าน goSafe
+// ซึ่ง recover ให้ — chi.Recoverer ครอบแค่ goroutine ของ request panic ตรงนี้จะฆ่าโปรเซส
+// ทิ้งทั้งเครื่อง ทั้งที่เส้นนี้ยิงทุกการเช็คอินครั้งแรก (ดูคอมเมนต์ที่ goSafe) · ครอบ
 // ทั้งก้อนด้วย notifyFeedbackTimeout ให้ทั้ง CheckpointName และ noti.Create มีเพดานเวลา
 // จริง — เดิมครอบแค่ SendUserPush (ซึ่งมี pushTimeout ของตัวเองอยู่แล้ว) สอง query DB
 // ตรงนี้เลยไม่มีเพดานเลย ถ้า Postgres ค้าง goroutine นี้จะไม่มีวันจบและยึด connection
@@ -82,7 +106,7 @@ func (s *WBWStaffService) Checkin(ctx context.Context, staffID string, req model
 // /me/progress อยู่ดี แจ้งเตือนเป็นทางลัด ไม่ใช่ทางเดียว
 func (s *WBWStaffService) notifyFeedback(ctx context.Context, participantID string, checkpointID int) {
 	detached := context.WithoutCancel(ctx)
-	go func() {
+	goSafe("notifyFeedback", func() {
 		c, cancel := context.WithTimeout(detached, notifyFeedbackTimeout)
 		defer cancel()
 
@@ -103,7 +127,7 @@ func (s *WBWStaffService) notifyFeedback(ctx context.Context, participantID stri
 			"type":          "checkin_feedback",
 			"checkpoint_id": ref,
 		})
-	}()
+	})
 }
 
 /* ---------- device token ---------- */

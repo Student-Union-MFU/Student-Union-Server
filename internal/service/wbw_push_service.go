@@ -135,18 +135,21 @@ type fcmErrorResponse struct {
 //
 // ใช้ context.WithoutCancel เพราะ context ของ request จะถูกยกเลิกทันทีที่ตอบ response
 // เสร็จ ถ้าเอา ctx เดิมไปใช้ใน goroutine push จะโดนยกเลิกแทบทุกครั้ง
+//
+// ผ่าน goSafe ไม่ใช่ go ตรงๆ — panic ใน goroutine ที่แตกเองไม่มี chi.Recoverer ครอบให้
+// จะฆ่าโปรเซสทั้งตัว (ดูคอมเมนต์ที่ goSafe) push เป็นงานเสริม ล้มทั้งเซิร์ฟเวอร์ไม่ได้
 func (s *WBWPushService) SendChatPush(ctx context.Context, msg model.Message) {
 	if s.tokens == nil {
 		return
 	}
 	detached := context.WithoutCancel(ctx)
-	go func() {
+	goSafe("SendChatPush", func() {
 		c, cancel := context.WithTimeout(detached, pushTimeout)
 		defer cancel()
 		if err := s.sendChat(c, msg); err != nil {
 			slog.Error("ส่ง push แชทไม่สำเร็จ", "group_id", msg.GroupID, "err", err)
 		}
-	}()
+	})
 }
 
 func (s *WBWPushService) sendChat(ctx context.Context, msg model.Message) error {
@@ -183,9 +186,13 @@ func (s *WBWPushService) sendChat(ctx context.Context, msg model.Message) error 
 	)
 	sem := make(chan struct{}, pushConcurrency)
 
+	// goSafe ไม่ใช่ go ตรงๆ เหมือนกัน — panic ในนี้ก็ฆ่าโปรเซสได้เท่ากับตัวข้างนอก
+	// (recover ของ SendChatPush อยู่คนละ goroutine กัน ครอบตัวลูกไม่ได้) · wg.Done กับ
+	// การคืน sem เป็น defer ที่อยู่ "ใน" f จึงยังทำงานครบก่อน panic จะไหลไปถึง recover
+	// wg.Wait() ข้างล่างไม่ค้าง · ตัวแปร t ปลอดภัยที่จะ capture ตรงๆ (Go 1.22+ ให้ตัวใหม่ทุกรอบ)
 	for _, t := range targets {
 		wg.Add(1)
-		go func(t repository.PushTarget) {
+		goSafe("sendChat.target", func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -213,7 +220,7 @@ func (s *WBWPushService) sendChat(ctx context.Context, msg model.Message) error 
 				invalid = append(invalid, t.Token)
 				mu.Unlock()
 			}
-		}(t)
+		})
 	}
 	wg.Wait()
 
@@ -229,18 +236,19 @@ func (s *WBWPushService) sendChat(ctx context.Context, msg model.Message) error 
 // ต้องไม่ทำให้คนเรียกช้าหรือพัง: เจ้าหน้าที่ยืนอยู่หน้าคิวตอนสแกน ถ้า FCM ช้า
 // หรือล่มแล้วลากให้ /staff/checkin ตอบช้า คิวก็ยาวขึ้นทันที
 // context.WithoutCancel เพราะ ctx ของ request ถูกยกเลิกทันทีที่ตอบ response เสร็จ
+// และผ่าน goSafe ด้วยเหตุผลเดียวกับ SendChatPush (ดูคอมเมนต์ที่ goSafe)
 func (s *WBWPushService) SendUserPush(ctx context.Context, userID, title, body string, data map[string]string) {
 	if s.tokens == nil {
 		return
 	}
 	detached := context.WithoutCancel(ctx)
-	go func() {
+	goSafe("SendUserPush", func() {
 		c, cancel := context.WithTimeout(detached, pushTimeout)
 		defer cancel()
 		if err := s.sendUser(c, userID, title, body, data); err != nil {
 			slog.Error("ส่ง push รายคนไม่สำเร็จ", "user_id", userID, "err", err)
 		}
-	}()
+	})
 }
 
 // sendUser — เหมือน sendChat ทุกขั้นตอน (ขอ token ครั้งเดียว ยิงแต่ละเครื่องพร้อมกัน
@@ -267,9 +275,10 @@ func (s *WBWPushService) sendUser(ctx context.Context, userID, title, body strin
 	)
 	sem := make(chan struct{}, pushConcurrency)
 
+	// goSafe ด้วยเหตุผลเดียวกับใน sendChat (ดูคอมเมนต์ที่นั่น)
 	for _, t := range targets {
 		wg.Add(1)
-		go func(t repository.PushTarget) {
+		goSafe("sendUser.target", func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -293,7 +302,7 @@ func (s *WBWPushService) sendUser(ctx context.Context, userID, title, body strin
 				invalid = append(invalid, t.Token)
 				mu.Unlock()
 			}
-		}(t)
+		})
 	}
 	wg.Wait()
 
