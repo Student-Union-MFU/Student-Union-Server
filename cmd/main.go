@@ -142,8 +142,14 @@ func main() {
 	wbwStaffService := service.NewWBWStaffService(wbwStaffRepo, wbwNotiService, wbwPushService)
 	wbwStaffHandler := handler.NewWBWStaffHandler(wbwStaffService)
 
-	// ความคืบหน้าเช็คอินของตัวเอง — ใช้ repo เดิมที่ wbwAdminService ใช้อยู่แล้ว
-	wbwProgressService := service.NewWBWProgressService(wbwCheckpointRepo)
+	// เบอร์กลางงาน — อ่านครั้งเดียวที่นี่แล้วส่งต่อให้ทั้ง progress (ด้านล่าง) และ SOS
+	// (ถัดไป) ไม่ใช่ os.Getenv ซ้ำที่จุดสร้างแต่ละอัน · ว่างได้ตอน dev แอปมีเบอร์ default
+	// ของตัวเองอยู่แล้ว
+	emergencyPhone := os.Getenv("WBW_EMERGENCY_PHONE")
+
+	// ความคืบหน้าเช็คอินของตัวเอง — ใช้ repo เดิมที่ wbwAdminService ใช้อยู่แล้ว · แนบเบอร์
+	// กลางไปด้วยเพราะ /me/progress ถูก poll ทุก 60 วิ เป็นจุดที่แอป cache เบอร์ไว้ก่อนเกิดเหตุ
+	wbwProgressService := service.NewWBWProgressService(wbwCheckpointRepo, emergencyPhone)
 	wbwProgressHandler := handler.NewWBWProgressHandler(wbwProgressService)
 
 	wbwFeedbackRepo := repository.NewWBWFeedbackRepository(pool)
@@ -154,14 +160,13 @@ func main() {
 	wbwDeviceHandler := handler.NewWBWDeviceHandler(wbwDeviceService)
 
 	// SOS ฉุกเฉิน — ช่อง LISTEN/NOTIFY แยกจากแชท (ดูคอมเมนต์ที่ sosChannel) ต้อง Start
-	// listener เองเหมือน chatEvents ข้างบน · WBW_EMERGENCY_PHONE ว่างได้ตอน dev — แอปมีเบอร์
-	// default ของตัวเองอยู่แล้ว
+	// listener เองเหมือน chatEvents ข้างบน · emergencyPhone อ่านไว้ครั้งเดียวข้างบนแล้ว
+	// (ตัวเดียวกับที่ progress service ใช้)
 	sosRepo := repository.NewWBWSOSRepository(pool)
 	sosEvents := service.NewSOSEvents(pool, config.ConnectListener)
 	sosEvents.Start(context.Background())
 	wbwSOSHandler := handler.NewWBWSOSHandler(
-		service.NewWBWSOSService(sosRepo, sosEvents, wbwPushService, wbwNotiService,
-			os.Getenv("WBW_EMERGENCY_PHONE")))
+		service.NewWBWSOSService(sosRepo, sosEvents, wbwPushService, wbwNotiService, emergencyPhone))
 
 	// ต้องผ่าน RequireAuth ก่อนเสมอ แล้วจึงเช็ค role
 	requireAuth := appmw.RequireAuth(wbwTokens)

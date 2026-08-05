@@ -383,6 +383,11 @@ type CheckinProgressItem struct {
 type CheckinProgress struct {
 	Total     int                   `json:"total"`
 	CheckedIn []CheckinProgressItem `json:"checked_in"`
+	// EmergencyPhone — เบอร์กลางงาน แนบมากับทุกครั้งที่ /me/progress ถูก poll (ทุก 60 วิ
+	// ระหว่างเปิดแอป) ให้ปุ่มโทรสำรองของ SOS มีเบอร์แคชไว้ในเครื่องตั้งแต่ก่อนเกิดเหตุ —
+	// ต่างจาก SOSCase.EmergencyPhone ที่มาถึงก็ต่อเมื่อส่ง SOS สำเร็จแล้วเท่านั้น
+	// ว่างได้ตอน dev — แอปมีเบอร์ default ของตัวเองอยู่แล้ว
+	EmergencyPhone string `json:"emergency_phone"`
 }
 
 /* ---------- ความเห็นต่อฐาน ---------- */
