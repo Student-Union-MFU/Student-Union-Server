@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"su-server/internal/model"
 
@@ -344,5 +345,186 @@ func (r *WBWSOSRepository) PushAllowed(ctx context.Context, id int64) (bool, err
 	err := r.db.QueryRow(ctx, `
 		SELECT last_push_at IS NULL OR now() - last_push_at > interval '60 seconds'
 		  FROM sos_event WHERE id = $1`, id).Scan(&ok)
+	return ok, err
+}
+
+// staffVisibility — เงื่อนไข WHERE ที่ตัดสินว่าเจ้าหน้าที่คนหนึ่งเห็นเคสไหนได้บ้าง
+//
+// สามทางที่ทำให้เห็น เรียงตามความตั้งใจ:
+//  1. เป็นฐานที่ตัวเองถูก assign
+//  2. เคสไม่มีฐาน (ไม่มีพิกัดเลย) — ไม่มีใครเป็นเจ้าของ ทุกคนจึงต้องเห็น
+//  3. ฐานนั้นไม่มีใครถูก assign เลย — "ไม่มีใครถูกมอบหมาย = ทุกคนเห็น" ปลอดภัยกว่า
+//     "ไม่มีใครเห็น" และเป็นตาข่ายรองรับ checkpoint_staff ที่ยังว่างบน production
+//
+// admin กับ medical/security ไม่เข้าเงื่อนไขนี้เลย — เห็นทุกเคสอยู่แล้ว
+const staffVisibility = `(
+	  s.checkpoint_id IS NULL
+	  OR s.checkpoint_id IN (SELECT checkpoint_id FROM checkpoint_staff WHERE user_id = $1::uuid)
+	  OR NOT EXISTS (SELECT 1 FROM checkpoint_staff cs WHERE cs.checkpoint_id = s.checkpoint_id)
+	  OR s.accuracy_m > 200
+	)`
+
+// seesEverything — บทบาทที่เห็นทุกเคสโดยไม่สนใจฐาน
+func (r *WBWSOSRepository) seesEverything(ctx context.Context, userID, role string) (bool, error) {
+	if role == "admin" {
+		return true, nil
+	}
+	var central bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM wbw_staff
+			 WHERE user_id = $1::uuid AND staff_role IN ('medical','security'))`,
+		userID).Scan(&central)
+	return central, err
+}
+
+// StaffFeed — เคสที่เปิดอยู่ทั้งหมด บวกเคสที่เพิ่งปิดใน 30 นาที
+//
+// ทำไมต้องมีเคสที่ปิดแล้ว: ฐานที่เพิ่งวิ่งไปช่วยต้องเห็นว่าเรื่องจบแล้ว ไม่ใช่เห็นเคส
+// หายไปเฉยๆ ซึ่งแยกไม่ออกจาก "แอปโหลดไม่ขึ้น"
+func (r *WBWSOSRepository) StaffFeed(ctx context.Context, staffID, role, since string) ([]model.SOSStaffCase, error) {
+	all, err := r.seesEverything(ctx, staffID, role)
+	if err != nil {
+		return nil, err
+	}
+	// args กับตำแหน่ง $n ใน where ต้องสร้างคู่กันไปทีละขั้น — staffVisibility (ผู้ใช้ $1) ถูกใส่
+	// ก็ต่อเมื่อ !all เท่านั้น ถ้า all = true (admin/medical/security) จะไม่มี $1 อยู่ใน SQL เลย
+	// การยัด staffID เข้า args แบบไม่มีเงื่อนไข (เหมือนโค้ดตั้งต้น) ทำให้ pgx ปฏิเสธด้วย
+	// "expected 0 arguments, got 1" ทันทีที่ all = true — เลขตำแหน่งของ since จึงคำนวณจาก
+	// len(args) ปัจจุบัน แทนที่จะเป็น $2 ตายตัว
+	where := `(NOT s.resolved OR s.resolved_at > now() - interval '30 minutes')`
+	args := []any{}
+	if !all {
+		where += ` AND ` + staffVisibility
+		args = append(args, staffID)
+	}
+	if since != "" {
+		where += ` AND s.updated_at > $` + strconv.Itoa(len(args)+1) + `::timestamptz`
+		args = append(args, since)
+	}
+
+	rows, err := r.db.Query(ctx, sosStaffSelect+` WHERE `+where+` ORDER BY s.updated_at DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list := []model.SOSStaffCase{}
+	for rows.Next() {
+		var c model.SOSStaffCase
+		if err := rows.Scan(&c.ID, &c.ForOther, &c.Lat, &c.Lng, &c.AccuracyM, &c.LocSource,
+			&c.CheckpointID, &c.CheckpointName, &c.Message, &c.Resolved, &c.ResolveReason,
+			&c.AckedAt, &c.AckedByName, &c.CreatedAt, &c.UpdatedAt,
+			&c.ParticipantID, &c.FirstName, &c.LastName, &c.Bib, &c.GroupNumber,
+			&c.ContactPhone, &c.EmergencyName, &c.EmergencyPh,
+			&c.BloodType, &c.HealthNotes); err != nil {
+			return nil, err
+		}
+		list = append(list, c)
+	}
+	return list, rows.Err()
+}
+
+// sosStaffSelect — ข้อมูลสุขภาพผูกเงื่อนไขไว้ใน SQL ไม่ใช่ในโค้ด Go
+//
+// สามข้อต้องจริงพร้อมกัน: ยินยอมให้ใช้ข้อมูลสุขภาพ · เคสยังเปิดอยู่ · เป็นตัวคนกดเอง
+// (for_other = true แปลว่าคนเจ็บเป็นคนอื่น ประวัติของคนกดไม่เกี่ยวและไม่ควรถูกเปิด)
+const sosStaffSelect = `
+	SELECT s.id, s.for_other, s.lat, s.lng, s.accuracy_m, s.loc_source,
+	       s.checkpoint_id, c.name, s.message, s.resolved, s.resolve_reason,
+	       s.acked_at::text, ack.display_name, s.server_received_at::text, s.updated_at::text,
+	       s.participant_id::text, COALESCE(p.first_name,''), COALESCE(p.last_name,''),
+	       p.bib_number, g.group_number,
+	       p.contact_phone, p.emergency_contact_name, p.emergency_contact_phone,
+	       CASE WHEN co.consent_health_data AND NOT s.resolved AND NOT s.for_other
+	            THEN h.blood_type::text END,
+	       CASE WHEN co.consent_health_data AND NOT s.resolved AND NOT s.for_other
+	            THEN concat_ws(E'\n',
+	                 NULLIF(h.chronic_disease,''), NULLIF(h.food_allergies,''),
+	                 NULLIF(h.medications,''), NULLIF(h.physical_limitations,'')) END
+	  FROM sos_event s
+	  LEFT JOIN checkpoint c        ON c.checkpoint_id = s.checkpoint_id
+	  LEFT JOIN wbw_user ack        ON ack.user_id = s.acked_by
+	  LEFT JOIN participant_profile p ON p.user_id = s.participant_id
+	  LEFT JOIN participant_group g ON g.group_id = p.group_id
+	  LEFT JOIN consent co          ON co.user_id = s.participant_id
+	  LEFT JOIN health_details h    ON h.user_id = s.participant_id`
+
+// SOSAudience — token ของทั้งสามกลุ่มผู้รับ แยกกันเพราะข้อความไม่เหมือนกัน
+// และเพราะ "ย้ำ" ยิงซ้ำเฉพาะสองกลุ่มแรก กลุ่มเพื่อนได้แค่ตอนเปิดกับตอนปิดเท่านั้น
+type SOSAudience struct {
+	StaffTokens   []string
+	CentralTokens []string
+	GroupTokens   []string
+}
+
+func (r *WBWSOSRepository) PushAudience(ctx context.Context, caseID int64) (*SOSAudience, error) {
+	var a SOSAudience
+
+	// 1. เจ้าหน้าที่ประจำฐานของเคสนี้
+	staff, err := r.tokens(ctx, `
+		SELECT d.token FROM sos_event s
+		  JOIN checkpoint_staff cs ON cs.checkpoint_id = s.checkpoint_id
+		  JOIN device_token d ON d.user_id = cs.user_id
+		 WHERE s.id = $1`, caseID)
+	if err != nil {
+		return nil, err
+	}
+	a.StaffTokens = staff
+
+	// 2. ทีมกลาง — เสมอ ไม่ว่าฐานไหน
+	central, err := r.tokens(ctx, `
+		SELECT d.token FROM device_token d
+		  JOIN wbw_user u ON u.user_id = d.user_id
+		  LEFT JOIN wbw_staff ws ON ws.user_id = d.user_id
+		 WHERE u.role = 'admin' OR ws.staff_role IN ('medical','security')`)
+	if err != nil {
+		return nil, err
+	}
+	a.CentralTokens = central
+
+	// 3. กลุ่มของคนกด ยกเว้นตัวเขาเอง
+	group, err := r.tokens(ctx, `
+		SELECT d.token FROM sos_event s
+		  JOIN participant_profile p ON p.group_id = s.group_id
+		  JOIN device_token d ON d.user_id = p.user_id
+		 WHERE s.id = $1 AND p.user_id <> s.participant_id`, caseID)
+	if err != nil {
+		return nil, err
+	}
+	a.GroupTokens = group
+
+	return &a, nil
+}
+
+func (r *WBWSOSRepository) tokens(ctx context.Context, sql string, args ...any) ([]string, error) {
+	rows, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// CanStaffSee — ใช้กับ ack/resolve ซึ่งอ้าง id ตรงๆ ไม่ได้ผ่าน feed
+func (r *WBWSOSRepository) CanStaffSee(ctx context.Context, staffID, role string, caseID int64) (bool, error) {
+	all, err := r.seesEverything(ctx, staffID, role)
+	if err != nil || all {
+		return all, err
+	}
+	var ok bool
+	err = r.db.QueryRow(ctx,
+		`SELECT `+staffVisibility+` FROM sos_event s WHERE s.id = $2`, staffID, caseID).Scan(&ok)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrSOSNotFound
+	}
 	return ok, err
 }

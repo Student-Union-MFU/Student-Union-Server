@@ -204,6 +204,90 @@ func TestResolveClosesTheCaseAndFreesTheOneOpenSlot(t *testing.T) {
 	}
 }
 
+func TestStaffFeedScopesByAssignedBaseButFallsBackWhenNobodyIsAssigned(t *testing.T) {
+	skipWithoutDB(t)
+	ctx := context.Background()
+	repo, participant := newSOSTestRepo(t)
+
+	assigned := seedStaffAtCheckpoint(t, 2)  // staff ประจำฐาน 2
+	elsewhere := seedStaffAtCheckpoint(t, 5) // staff ประจำฐาน 5
+
+	// เคสที่ฐาน 2 — คนประจำฐาน 2 เห็น คนประจำฐาน 5 ไม่เห็น
+	if _, _, err := repo.Raise(ctx, participant, model.SOSRequest{
+		ClientID: "f0000000-0000-0000-0000-000000000001", DeviceTime: "2026-08-06T10:00:00Z",
+	}, intPtr(2), strPtr("gps")); err != nil {
+		t.Fatal(err)
+	}
+
+	mine, err := repo.StaffFeed(ctx, assigned, "staff", "")
+	if err != nil || len(mine) != 1 {
+		t.Fatalf("staff ประจำฐาน 2 ต้องเห็นเคสของฐานตัวเอง ได้ %d เคส err=%v", len(mine), err)
+	}
+	theirs, err := repo.StaffFeed(ctx, elsewhere, "staff", "")
+	if err != nil || len(theirs) != 0 {
+		t.Fatalf("staff ฐานอื่นต้องไม่เห็น ได้ %d เคส", len(theirs))
+	}
+}
+
+func TestStaffFeedShowsEveryCaseToAdminAndToMedical(t *testing.T) {
+	skipWithoutDB(t)
+	ctx := context.Background()
+	repo, participant := newSOSTestRepo(t)
+	admin := seedUserWithRole(t, "admin", "")
+	medic := seedUserWithRole(t, "staff", "medical")
+
+	if _, _, err := repo.Raise(ctx, participant, model.SOSRequest{
+		ClientID: "f0000000-0000-0000-0000-000000000002", DeviceTime: "2026-08-06T10:00:00Z",
+	}, intPtr(2), strPtr("gps")); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, u := range map[string]struct{ id, role string }{
+		"admin":   {admin, "admin"},
+		"medical": {medic, "staff"},
+	} {
+		got, err := repo.StaffFeed(ctx, u.id, u.role, "")
+		if err != nil || len(got) != 1 {
+			t.Fatalf("%s ต้องเห็นทุกเคส ได้ %d เคส err=%v", name, len(got), err)
+		}
+	}
+}
+
+func TestStaffFeedFallsBackToEveryoneWhenTheBaseHasNoAssignedStaff(t *testing.T) {
+	skipWithoutDB(t)
+	ctx := context.Background()
+	repo, participant := newSOSTestRepo(t)
+	unrelated := seedStaffAtCheckpoint(t, 5)
+
+	// ฐาน 7 ไม่มีใครถูก assign เลย
+	if _, _, err := repo.Raise(ctx, participant, model.SOSRequest{
+		ClientID: "f0000000-0000-0000-0000-000000000003", DeviceTime: "2026-08-06T10:00:00Z",
+	}, intPtr(7), strPtr("gps")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.StaffFeed(ctx, unrelated, "staff", "")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("ฐานที่ไม่มีคนประจำ ทุกคนต้องเห็น ได้ %d เคส err=%v", len(got), err)
+	}
+}
+
+func TestStaffFeedShowsCasesWithNoBaseToEveryone(t *testing.T) {
+	skipWithoutDB(t)
+	ctx := context.Background()
+	repo, participant := newSOSTestRepo(t)
+	anyStaff := seedStaffAtCheckpoint(t, 5)
+
+	if _, _, err := repo.Raise(ctx, participant, model.SOSRequest{
+		ClientID: "f0000000-0000-0000-0000-000000000004", DeviceTime: "2026-08-06T10:00:00Z",
+	}, nil, strPtr("none")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.StaffFeed(ctx, anyStaff, "staff", "")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("เคสที่ไม่มีพิกัดเลย ทุกคนต้องเห็น ได้ %d เคส err=%v", len(got), err)
+	}
+}
+
 /*
 newSOSTestRepo / seedStaffUser — ทรงเดียวกับ openTestDB ใน wbw_feedback_repository_test.go:
 เปิด pool จาก WBW_TEST_DSN (fallback ไป .env ที่ root แบบเดียวกัน) แล้วปิดเองตอนจบเทส
@@ -227,6 +311,8 @@ var testSOSClientIDs = []string{
 	"dddddddd-0000-0000-0000-000000000001",
 	"eeeeeeee-0000-0000-0000-000000000001", "eeeeeeee-0000-0000-0000-000000000002",
 	"ffffffff-0000-0000-0000-000000000001", "ffffffff-0000-0000-0000-000000000002",
+	"f0000000-0000-0000-0000-000000000001", "f0000000-0000-0000-0000-000000000002",
+	"f0000000-0000-0000-0000-000000000003", "f0000000-0000-0000-0000-000000000004",
 }
 
 // openSOSTestDB — เปิด pool ทดสอบหนึ่งตัว แล้วล้างเคสทดสอบเก่า (ถ้ามีค้างจากรันก่อนหน้า
@@ -333,6 +419,98 @@ func seedStaffUser(t *testing.T) string {
 			t.Errorf("ล้างเจ้าหน้าที่ทดสอบไม่สำเร็จ: %v", err)
 		}
 	})
+
+	return userID
+}
+
+// seedStaffAtCheckpoint — เจ้าหน้าที่หนึ่งคน ถูก assign เข้าฐานที่ระบุผ่าน checkpoint_staff
+// ใช้พิสูจน์กติกาข้อ 1 ของ staffVisibility: เห็นเฉพาะฐานที่ตัวเองถูก assign
+//
+// ทรงเดียวกับ seedStaffUser: ลงทะเบียน t.Cleanup ทันทีหลัง insert wbw_user สำเร็จ ก่อนจะ
+// insert checkpoint_staff ต่อ — ถ้ารอไปลงทะเบียนหลัง insert ทุกแถวเสร็จแล้วแถวถัดไปพังกลางคัน
+// แถว wbw_user จะค้างไม่ถูกลบ (Task 3 โดนมาแล้วกับ newSOSTestRepo ดู comment ด้านบน)
+func seedStaffAtCheckpoint(t *testing.T, checkpointID int) string {
+	t.Helper()
+	pool := openSOSTestDB(t)
+	ctx := context.Background()
+
+	username := "sos-staff-cp-" + newUUID()
+	var userID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO wbw_user (username, password_hash, role, display_name)
+		VALUES ($1, 'x', 'staff', 'SOS Test Staff At Checkpoint')
+		RETURNING user_id::text`, username).Scan(&userID); err != nil {
+		t.Fatalf("สร้างเจ้าหน้าที่ทดสอบไม่สำเร็จ: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cctx := context.Background()
+		if _, err := pool.Exec(cctx,
+			`DELETE FROM sos_event WHERE acked_by = $1::uuid OR resolved_by = $1::uuid`, userID); err != nil {
+			t.Errorf("ล้างเคส SOS ที่ผูกกับเจ้าหน้าที่ทดสอบไม่สำเร็จ: %v", err)
+		}
+		if _, err := pool.Exec(cctx,
+			`DELETE FROM checkpoint_staff WHERE user_id = $1::uuid`, userID); err != nil {
+			t.Errorf("ล้างการ assign ฐานของเจ้าหน้าที่ทดสอบไม่สำเร็จ: %v", err)
+		}
+		if _, err := pool.Exec(cctx,
+			`DELETE FROM wbw_user WHERE user_id = $1::uuid`, userID); err != nil {
+			t.Errorf("ล้างเจ้าหน้าที่ทดสอบไม่สำเร็จ: %v", err)
+		}
+	})
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO checkpoint_staff (checkpoint_id, user_id) VALUES ($1, $2::uuid)`,
+		checkpointID, userID); err != nil {
+		t.Fatalf("assign เจ้าหน้าที่ทดสอบเข้าฐาน %d ไม่สำเร็จ: %v", checkpointID, err)
+	}
+
+	return userID
+}
+
+// seedUserWithRole — บัญชีที่มี role (และ staff_role ถ้าระบุ) ตามต้องการ ใช้พิสูจน์ว่า admin
+// กับ staff บทบาท medical/security เห็นทุกเคสโดยไม่สนใจฐาน (seesEverything)
+//
+// staffRole ว่าง ("") แปลว่าไม่ต้องมีแถวใน wbw_staff เลย — กรณี admin ไม่จำเป็นต้องมี staff_role
+// ทรงเดียวกับ seedStaffUser: ลงทะเบียน t.Cleanup ทันทีหลัง insert wbw_user สำเร็จ ก่อนจะ
+// insert wbw_staff ต่อ (ถ้ามี) กันแถว wbw_user ค้างถ้า insert ถัดไปพัง
+func seedUserWithRole(t *testing.T, role, staffRole string) string {
+	t.Helper()
+	pool := openSOSTestDB(t)
+	ctx := context.Background()
+
+	username := "sos-" + role + "-" + newUUID()
+	var userID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO wbw_user (username, password_hash, role, display_name)
+		VALUES ($1, 'x', $2::user_role, 'SOS Test User With Role')
+		RETURNING user_id::text`, username, role).Scan(&userID); err != nil {
+		t.Fatalf("สร้างผู้ใช้ทดสอบ (role=%s) ไม่สำเร็จ: %v", role, err)
+	}
+
+	t.Cleanup(func() {
+		cctx := context.Background()
+		if _, err := pool.Exec(cctx,
+			`DELETE FROM sos_event WHERE acked_by = $1::uuid OR resolved_by = $1::uuid`, userID); err != nil {
+			t.Errorf("ล้างเคส SOS ที่ผูกกับผู้ใช้ทดสอบไม่สำเร็จ: %v", err)
+		}
+		if _, err := pool.Exec(cctx,
+			`DELETE FROM wbw_staff WHERE user_id = $1::uuid`, userID); err != nil {
+			t.Errorf("ล้าง wbw_staff ของผู้ใช้ทดสอบไม่สำเร็จ: %v", err)
+		}
+		if _, err := pool.Exec(cctx,
+			`DELETE FROM wbw_user WHERE user_id = $1::uuid`, userID); err != nil {
+			t.Errorf("ล้างผู้ใช้ทดสอบไม่สำเร็จ: %v", err)
+		}
+	})
+
+	if staffRole != "" {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO wbw_staff (user_id, staff_role) VALUES ($1::uuid, $2::staff_role)`,
+			userID, staffRole); err != nil {
+			t.Fatalf("สร้าง wbw_staff (staff_role=%s) ไม่สำเร็จ: %v", staffRole, err)
+		}
+	}
 
 	return userID
 }
