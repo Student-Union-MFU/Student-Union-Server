@@ -14,6 +14,36 @@ import (
 // ถ้าใช้ช่องเดียวกัน long-poll ของ SOS จะตื่นทุกครั้งที่มีใครพิมพ์ข้อความในทุกกลุ่ม
 const sosChannel = "wbw_sos"
 
+// reconnectBackoff — จังหวะต่อใหม่ของ listener
+//
+// แยกออกมาเป็นชนิดของตัวเองเพราะ listenLoop เองเทสยาก (ต้องมี Postgres จริง)
+// แต่ "ล้มติดกันต้องถอยเพิ่ม ล้มหลังจากต่อติดต้องเริ่มใหม่ที่ 1 วิ" คือกฎที่พังเงียบได้
+// และเป็นกฎเดียวกับที่เคยพังมาแล้วครั้งหนึ่ง (backoff reset ในโค้ดเดิมค้างชิด)
+type reconnectBackoff struct {
+	d time.Duration
+}
+
+func newReconnectBackoff() *reconnectBackoff {
+	return &reconnectBackoff{d: time.Second}
+}
+
+// next — ส่งค่าปัจจุบัน แล้วเพิ่มเป็นสองเท่า เพดาน 30 วิ
+func (b *reconnectBackoff) next() time.Duration {
+	result := b.d
+	if b.d < 30*time.Second {
+		b.d *= 2
+		if b.d > 30*time.Second {
+			b.d = 30*time.Second
+		}
+	}
+	return result
+}
+
+// reset — กลับไป 1 วิ — เรียกเมื่อต่อติดจริง
+func (b *reconnectBackoff) reset() {
+	b.d = time.Second
+}
+
 type SOSEvents struct {
 	pool *pgxpool.Pool
 	dial func(context.Context) (*pgx.Conn, error)
@@ -29,18 +59,16 @@ func NewSOSEvents(pool *pgxpool.Pool, dial func(context.Context) (*pgx.Conn, err
 func (e *SOSEvents) Start(ctx context.Context) { go e.listenLoop(ctx) }
 
 func (e *SOSEvents) listenLoop(ctx context.Context) {
-	backoff := time.Second
+	backoff := newReconnectBackoff()
 	for ctx.Err() == nil {
-		resetBackoff := func() { backoff = time.Second }
-		if err := e.listenOnce(ctx, resetBackoff); err != nil && ctx.Err() == nil {
-			slog.Error("sos listener หลุด กำลังต่อใหม่", "err", err, "in", backoff)
+		onConnected := func() { backoff.reset() }
+		if err := e.listenOnce(ctx, onConnected); err != nil && ctx.Err() == nil {
+			d := backoff.next()
+			slog.Error("sos listener หลุด กำลังต่อใหม่", "err", err, "in", d)
 			select {
-			case <-time.After(backoff):
+			case <-time.After(d):
 			case <-ctx.Done():
 				return
-			}
-			if backoff < 30*time.Second {
-				backoff *= 2
 			}
 			continue
 		}

@@ -48,33 +48,66 @@ func TestSOSEventsWaitWithZeroTimeoutReturnsImmediately(t *testing.T) {
 	}
 }
 
-func TestSOSEventsBackoffResetsOnSuccessfulConnection(t *testing.T) {
-	// ทดสอบกลไก backoff reset — callback onConnected ถูกเรียก
-	// หลัง LISTEN สำเร็จ ซึ่งทำให้ backoff รีเซตกลับมา 1 วินาที
-	//
-	// การทดสอบ: stopwatch ที่วัดช่วงเวลาระหว่างสองครั้งที่ reconnect ครั้งแรก
-	// กับครั้งที่สอง หลัง backoff reset ต้องสั้นกว่า (restart at 1 second, not doubled)
-	//
-	// หรือ: ตรวจสอบโค้ดว่า onConnected callback ถูกสายในที่ที่ถูกต้อง
-	// (หลัง Exec("LISTEN") สำเร็จ) โดยการอ่านโค้ด
-	//
-	// เนื่องจาก pgx.Conn เป็น concrete type ที่มocked ไม่ได้ง่าย ๆ
-	// การทดสอบ backoff reset logic จึงอาศัยการตรวจสอบโค้ด:
-	// 1. listenLoop ส่ง resetBackoff closure ไปให้ listenOnce
-	// 2. listenOnce เรียก onConnected() หลัง Exec("LISTEN") สำเร็จ
-	// 3. resetBackoff closure ตั้ง backoff = time.Second
-	// 4. ผลคือ: failure หลัง success เริ่มจาก 1 วินาที ไม่เพิ่มเป็น 2 วินาที
-	//
-	// Test นี้ยืนยันว่า closure onConnected ทำงาน (simple smoke test)
-	connectedCalled := false
-	onConnected := func() {
-		connectedCalled = true
+func TestReconnectBackoffNextDoubles(t *testing.T) {
+	b := newReconnectBackoff()
+
+	if b.next() != time.Second {
+		t.Fatal("ครั้งแรกต้อง 1 วิ")
+	}
+	if b.next() != 2*time.Second {
+		t.Fatal("ครั้งที่สองต้อง 2 วิ")
+	}
+	if b.next() != 4*time.Second {
+		t.Fatal("ครั้งที่สามต้อง 4 วิ")
+	}
+}
+
+func TestReconnectBackoffCapAt30Seconds(t *testing.T) {
+	b := newReconnectBackoff()
+
+	// เพิ่มไปเรื่อย ๆ จนถึง 30 วิ
+	for i := 0; i < 10; i++ {
+		b.next()
 	}
 
-	// จำลองการเรียก closure ที่จะเกิดขึ้นในโลกจริงหลัง LISTEN สำเร็จ
-	onConnected()
+	// ต้องค้างที่ 30 วิ ไม่เพิ่มต่อ
+	if b.next() != 30*time.Second {
+		t.Fatal("ต้องค้าง 30 วิ")
+	}
+	if b.next() != 30*time.Second {
+		t.Fatal("ต้องค้าง 30 วิ ต่อไป")
+	}
+}
 
-	if !connectedCalled {
-		t.Fatal("onConnected callback ต้องทำงาน")
+func TestReconnectBackoffResetAfterFailures(t *testing.T) {
+	b := newReconnectBackoff()
+
+	// ล้มติดกันสองครั้ง — ต้อง 1s แล้ว 2s
+	if b.next() != time.Second {
+		t.Fatal("ล้มครั้งแรก 1 วิ")
+	}
+	if b.next() != 2*time.Second {
+		t.Fatal("ล้มครั้งที่สอง 2 วิ")
+	}
+
+	// เรียก reset เมื่อต่อติด
+	b.reset()
+
+	// ล้มครั้งต่อไปต้องเริ่มจาก 1 วิ
+	if b.next() != time.Second {
+		t.Fatal("หลังจาก reset ต้อง 1 วิ")
+	}
+	if b.next() != 2*time.Second {
+		t.Fatal("หลังจาก reset ครั้งที่สองต้อง 2 วิ")
+	}
+}
+
+func TestReconnectBackoffResetOnFreshInstance(t *testing.T) {
+	b := newReconnectBackoff()
+	b.reset()
+
+	// reset ในอินสแตนซใหม่ไม่ต้องทำอะไร
+	if b.next() != time.Second {
+		t.Fatal("fresh instance หลัง reset ต้อง 1 วิ")
 	}
 }
