@@ -153,6 +153,16 @@ func main() {
 	wbwDeviceService := service.NewWBWDeviceService(wbwDeviceRepo)
 	wbwDeviceHandler := handler.NewWBWDeviceHandler(wbwDeviceService)
 
+	// SOS ฉุกเฉิน — ช่อง LISTEN/NOTIFY แยกจากแชท (ดูคอมเมนต์ที่ sosChannel) ต้อง Start
+	// listener เองเหมือน chatEvents ข้างบน · WBW_EMERGENCY_PHONE ว่างได้ตอน dev — แอปมีเบอร์
+	// default ของตัวเองอยู่แล้ว
+	sosRepo := repository.NewWBWSOSRepository(pool)
+	sosEvents := service.NewSOSEvents(pool, config.ConnectListener)
+	sosEvents.Start(context.Background())
+	wbwSOSHandler := handler.NewWBWSOSHandler(
+		service.NewWBWSOSService(sosRepo, sosEvents, wbwPushService, wbwNotiService,
+			os.Getenv("WBW_EMERGENCY_PHONE")))
+
 	// ต้องผ่าน RequireAuth ก่อนเสมอ แล้วจึงเช็ค role
 	requireAuth := appmw.RequireAuth(wbwTokens)
 	requireAdmin := appmw.RequireRole("admin")
@@ -331,6 +341,12 @@ func main() {
 		// ความเห็นต่อฐาน — ผู้เข้าร่วมส่งของตัวเอง
 		r.With(requireAuth).Post("/me/feedback", wbwFeedbackHandler.Submit)
 
+		// SOS ฉุกเฉิน — กดได้จากทุกหน้า ไม่ผูกกับฐานไหน
+		r.With(requireAuth).Post("/me/sos", wbwSOSHandler.Raise)
+		r.With(requireAuth).Get("/me/sos/active", wbwSOSHandler.Active)
+		r.With(requireAuth).Get("/me/sos/{id}", wbwSOSHandler.Get)
+		r.With(requireAuth).Post("/me/sos/{id}/cancel", wbwSOSHandler.Cancel)
+
 		r.Route("/groups", func(r chi.Router) {
 			r.Use(requireAuth)
 			r.Get("/", wbwAdminHandler.ListGroups)
@@ -364,6 +380,11 @@ func main() {
 			r.Use(requireAuth, requireStaff)
 			r.Get("/checkpoints", wbwStaffHandler.Checkpoints)
 			r.Post("/checkin", wbwStaffHandler.Checkin)
+
+			// SOS ฉุกเฉิน — ฝั่งเจ้าหน้าที่
+			r.Get("/sos", wbwSOSHandler.StaffFeed)
+			r.Post("/sos/{id}/ack", wbwSOSHandler.Ack)
+			r.Post("/sos/{id}/resolve", wbwSOSHandler.Resolve)
 		})
 
 		r.Route("/notifications", func(r chi.Router) {

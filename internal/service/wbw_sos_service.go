@@ -61,9 +61,9 @@ type sosNoti interface {
 // ยืนยันตอนคอมไพล์ว่า service จริงยังเข้ากับ interface นี้ได้ — ของปลอมในเทสยืนยันแทนไม่ได้
 var _ sosNoti = (*WBWNotificationService)(nil)
 
-// sosPush ยังไม่มี var _ sosPush = (*WBWPushService)(nil) แบบเดียวกัน เพราะ WBWPushService
-// ยังไม่มีเมธอด SendToTokens ณ ตอนที่เขียนไฟล์นี้ — Task 7 เป็นคนเพิ่ม (ดู task-7-brief.md
-// Step 5) ถ้าเพิ่ม assertion ตรงนี้ตอนนี้จะคอมไพล์ไม่ผ่านทันที ปล่อยให้ Task 7 เติมเอง
+// เพิ่มโดย Task 7 หลังจาก WBWPushService มีเมธอด SendToTokens แล้ว (ดู wbw_push_service.go)
+// — ก่อนหน้านี้ assertion ตัวนี้เขียนไม่ได้เพราะเมธอดยังไม่มี ปล่อยให้คอมไพล์ผ่านด้วยของปลอมในเทสไปก่อน
+var _ sosPush = (*WBWPushService)(nil)
 
 type WBWSOSService struct {
 	repo           sosRepo
