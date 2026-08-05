@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 
 	"su-server/internal/model"
@@ -96,6 +97,73 @@ func TestRaiseKeepsForOtherTrueOnceAnyPressSaysSo(t *testing.T) {
 	}
 }
 
+// เทสนี้พิสูจน์ Important 1 จากรีวิว: การกดครั้งแรกสุดของคนคนหนึ่ง (ยังไม่มีแถวใน sos_event
+// เลย) ไม่มีอะไรให้ FOR UPDATE ล็อก สอง Raise ที่มาพร้อมกันจึงเห็น ErrNoRows เหมือนกันแล้ววิ่ง
+// เข้า branch INSERT ทั้งคู่ ไปชนกันที่ sos_one_open_per_user จริง — ตัวที่แพ้ต้องไม่ได้ 23505
+// ดิบๆ กลับไป ต้อง retry แล้วเจอแถวที่ตัวชนะสร้างไว้ ตอบ created = false แทน
+func TestRaiseConcurrentOnBrandNewParticipantNeverLeaksARaw23505(t *testing.T) {
+	skipWithoutDB(t)
+	repo, participant := newSOSTestRepo(t)
+
+	clientIDs := []string{
+		"ffffffff-0000-0000-0000-000000000001",
+		"ffffffff-0000-0000-0000-000000000002",
+	}
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		ids     []int64
+		created []bool
+		fails   []error
+	)
+	start := make(chan struct{})
+	for _, cid := range clientIDs {
+		wg.Add(1)
+		go func(cid string) {
+			defer wg.Done()
+			<-start
+			c, isNew, err := repo.Raise(context.Background(), participant, model.SOSRequest{
+				ClientID: cid, DeviceTime: "2026-08-06T10:00:00Z",
+			}, nil, nil)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				fails = append(fails, err)
+				return
+			}
+			ids = append(ids, c.ID)
+			created = append(created, isNew)
+		}(cid)
+	}
+	close(start)
+	wg.Wait()
+
+	for _, err := range fails {
+		t.Fatalf("กดครั้งแรกพร้อมกันสองฝั่งต้องไม่มีใคร error เลย (โดยเฉพาะ 23505 ดิบๆ): %v", err)
+	}
+	if len(ids) != 2 || ids[0] != ids[1] {
+		t.Fatalf("ทั้งสองฝั่งต้องลงเอยที่แถวเดียวกัน ได้ %v", ids)
+	}
+	newCount := 0
+	for _, c := range created {
+		if c {
+			newCount++
+		}
+	}
+	if newCount != 1 {
+		t.Fatalf("ต้องมีแค่ฝั่งเดียวที่ created = true (อีกฝั่งต้อง retry แล้วเจอแถวเดิม) ได้ %d จาก %v", newCount, created)
+	}
+
+	var rowCount int
+	if err := repo.db.QueryRow(context.Background(),
+		`SELECT count(*) FROM sos_event WHERE participant_id = $1::uuid`, participant).Scan(&rowCount); err != nil {
+		t.Fatal(err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("ต้องมีแถว sos_event แค่แถวเดียวสำหรับคนนี้ ได้ %d", rowCount)
+	}
+}
+
 func TestCancelBeforeAckWorksAndAfterAckIsRejected(t *testing.T) {
 	skipWithoutDB(t)
 	ctx := context.Background()
@@ -158,6 +226,7 @@ var testSOSClientIDs = []string{
 	"cccccccc-0000-0000-0000-000000000001", "cccccccc-0000-0000-0000-000000000002",
 	"dddddddd-0000-0000-0000-000000000001",
 	"eeeeeeee-0000-0000-0000-000000000001", "eeeeeeee-0000-0000-0000-000000000002",
+	"ffffffff-0000-0000-0000-000000000001", "ffffffff-0000-0000-0000-000000000002",
 }
 
 // openSOSTestDB — เปิด pool ทดสอบหนึ่งตัว แล้วล้างเคสทดสอบเก่า (ถ้ามีค้างจากรันก่อนหน้า
@@ -210,11 +279,9 @@ func newSOSTestRepo(t *testing.T) (*WBWSOSRepository, string) {
 		RETURNING user_id::text`, username).Scan(&userID); err != nil {
 		t.Fatalf("สร้างผู้เข้าร่วมทดสอบไม่สำเร็จ: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO participant_profile (user_id) VALUES ($1::uuid)`, userID); err != nil {
-		t.Fatalf("สร้างโปรไฟล์ผู้เข้าร่วมทดสอบไม่สำเร็จ: %v", err)
-	}
 
+	// ลงทะเบียนล้างทิ้งทันทีหลัง insert แถวแรกสำเร็จ — ถ้า insert แถวถัดไป (participant_profile)
+	// พังแล้ว t.Fatalf แถว wbw_user นี้ต้องไม่ค้าง ไม่ใช่รอไปลงทะเบียนหลัง insert ทุกแถวเสร็จ
 	t.Cleanup(func() {
 		cctx := context.Background()
 		if _, err := pool.Exec(cctx,
@@ -227,6 +294,11 @@ func newSOSTestRepo(t *testing.T) (*WBWSOSRepository, string) {
 			t.Errorf("ล้างผู้เข้าร่วมทดสอบไม่สำเร็จ: %v", err)
 		}
 	})
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO participant_profile (user_id) VALUES ($1::uuid)`, userID); err != nil {
+		t.Fatalf("สร้างโปรไฟล์ผู้เข้าร่วมทดสอบไม่สำเร็จ: %v", err)
+	}
 
 	return NewWBWSOSRepository(pool), userID
 }

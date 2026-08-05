@@ -88,9 +88,30 @@ func (r *WBWSOSRepository) LastCheckinCheckpoint(ctx context.Context, participan
 //
 // คืน (เคส, สร้างใหม่ไหม, error) · created = false แปลว่าเป็นการย้ำหรือส่งซ้ำ
 // ซึ่งผู้เรียกใช้ตัดสินใจว่าจะยิง push อีกรอบไหม (ดู rate limit ใน service)
+//
+// ข้อยกเว้นของ "ล็อกก่อนแล้วไม่มี 23505 ให้แก้ทีหลัง": การกดครั้งแรกสุดของคนคนหนึ่งยังไม่มีแถว
+// ในตารางเลย จึงไม่มีอะไรให้ FOR UPDATE ล็อก — ดู raise() ด้านล่างสำหรับการดักจุดนี้
 func (r *WBWSOSRepository) Raise(
 	ctx context.Context, participantID string, req model.SOSRequest,
 	checkpointID *int, locSource *string,
+) (*model.SOSCase, bool, error) {
+	return r.raise(ctx, participantID, req, checkpointID, locSource, true)
+}
+
+// raise — ตัวจริงของ Raise · retryOnConflict เปิดได้แค่ครั้งเดียว กันวนไม่รู้จบ
+//
+// ทำไมต้อง retry: การกดครั้งแรกสุดของคนคนหนึ่งยังไม่มีแถวให้ FOR UPDATE ล็อก สอง Raise ที่มา
+// พร้อมกันจึงเห็น ErrNoRows เหมือนกันแล้ววิ่งเข้า branch INSERT ทั้งคู่ Postgres ปล่อยผ่านได้
+// แค่ตัวเดียวผ่าน unique index (ชนได้ทั้ง sos_one_open_per_user หรือ client_id เดิม) ตัวที่แพ้
+// ได้ 23505 กลับมา — ซึ่งแปลว่าตัวที่ชนะ commit ไปแล้วจริง (Postgres ล็อกระดับ index ตอน insert
+// ตัวที่แพ้ต้อง block รอผลของตัวที่ชนะก่อนเสมอ ไม่มีทางเห็น 23505 ก่อนตัวชนะ commit) rollback
+// แล้ววนกลับไปเดินตรรกะเดิมอีกครั้งเดียวจึงเจอแถวที่ชนะแน่นอน ไม่ว่าจะชนกันที่ constraint ไหน:
+// ชนที่ participant → เจอผ่าน branch "เคสเปิดอยู่แล้ว" (case err == nil ด้านบน) · ชนที่ client_id
+// → เจอผ่าน branch "client_id เดิม" ทั้งสอง branch ตอบ created = false เหมือนกัน ตรงกับที่
+// ผู้เรียก (retry จาก outbox หรือกดซ้ำ) ต้องการอยู่แล้ว
+func (r *WBWSOSRepository) raise(
+	ctx context.Context, participantID string, req model.SOSRequest,
+	checkpointID *int, locSource *string, retryOnConflict bool,
 ) (*model.SOSCase, bool, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -156,6 +177,11 @@ func (r *WBWSOSRepository) Raise(
 			req.ClientID, participantID, req.DeviceTime, req.Lat, req.Lng, req.AccuracyM,
 			locSource, checkpointID, req.Message, req.ForOther,
 		).Scan(&newID); err != nil {
+			// การกดครั้งแรกสุดไม่มีแถวให้ FOR UPDATE ล็อก — แข่งกันได้จริงตรงนี้ (ดู doc ด้านบน)
+			if retryOnConflict && IsPGCode(err, "23505") {
+				_ = tx.Rollback(ctx)
+				return r.raise(ctx, participantID, req, checkpointID, locSource, false)
+			}
 			return nil, false, err
 		}
 		c, err := r.getTx(ctx, tx, newID)
@@ -231,10 +257,34 @@ func (r *WBWSOSRepository) GetForViewer(ctx context.Context, viewerID string, id
 
 // Cancel — คนกดยกเลิกเอง · ปิดเคสด้วย reason canceled_by_user เพื่อให้ open_sos
 // ที่นับ resolved = FALSE ยังถูกต้อง
+//
+// เงื่อนไขทั้งหมด (เจ้าของเคส, ยังไม่ resolved, ยังไม่ acked, ยังไม่เลยเวลา) อยู่ใน WHERE ของ
+// UPDATE ตัวเดียวกันตัวเดียว — เดิมเป็น SELECT เช็คก่อนแล้วค่อย UPDATE แยกทีหลัง ซึ่งเปิดช่องให้
+// เจ้าหน้าที่ Ack หรือ Resolve แทรกเข้ามาระหว่างสองคำสั่งได้ (ไม่มีทรานแซกชัน ไม่มีล็อก) ผลคือ
+// UPDATE ทับ resolve_reason ของเจ้าหน้าที่ทิ้งเงียบๆ กลายเป็น canceled_by_user ทั้งที่จริงมีคน
+// ไปช่วยแล้ว — UPDATE เดียวอะตอมมิกตัดช่องนั้นทิ้งไปเลย โดยไม่ต้องเพิ่มทรานแซกชัน/ล็อก
 func (r *WBWSOSRepository) Cancel(ctx context.Context, participantID string, id int64) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE sos_event
+		   SET resolved = TRUE, resolve_reason = 'canceled_by_user',
+		       resolved_at = now(), updated_at = now()
+		 WHERE id = $1 AND participant_id = $2::uuid
+		   AND NOT resolved AND acked_at IS NULL
+		   AND now() - server_received_at <= make_interval(secs => $3)`,
+		id, participantID, cancelWindowSeconds)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+
+	// UPDATE ไม่โดนแถวไหนเลย — วินิจฉัยว่าเพราะอะไร (ไม่พบ / รับเรื่องแล้ว / เลยเวลา) ด้วย
+	// SELECT แยกอีกที เป็นแค่การเลือกข้อความ error กลับไป ไม่ใช่การตัดสินใจเขียนอะไรเพิ่ม
+	// จึงไม่เปิดช่อง race แบบเดิม
 	var acked bool
 	var tooOld bool
-	err := r.db.QueryRow(ctx, `
+	err = r.db.QueryRow(ctx, `
 		SELECT acked_at IS NOT NULL,
 		       now() - server_received_at > make_interval(secs => $3)
 		  FROM sos_event
@@ -252,12 +302,9 @@ func (r *WBWSOSRepository) Cancel(ctx context.Context, participantID string, id 
 	if tooOld {
 		return ErrSOSTooLateToCancel
 	}
-	_, err = r.db.Exec(ctx, `
-		UPDATE sos_event
-		   SET resolved = TRUE, resolve_reason = 'canceled_by_user',
-		       resolved_at = now(), updated_at = now()
-		 WHERE id = $1`, id)
-	return err
+	// ไม่ควรมาถึงจุดนี้ได้จริง (UPDATE พลาดไปแล้วแต่การวินิจฉัยบอกว่าน่าจะผ่าน) — คืนค่าที่ปลอดภัย
+	// ที่สุดแทนการเดา ไม่ใช่ error ที่ปิดบังว่าเกิดอะไรขึ้น
+	return ErrSOSNotFound
 }
 
 // Ack — เจ้าหน้าที่กด "กำลังไป" · คนที่สองไม่แย่งของคนแรก (WHERE acked_at IS NULL)
