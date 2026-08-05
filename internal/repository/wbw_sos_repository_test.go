@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -288,6 +289,282 @@ func TestStaffFeedShowsCasesWithNoBaseToEveryone(t *testing.T) {
 	}
 }
 
+// ==== รอบแก้ตาม code review: cursor ชนกันได้จริง + สี่เส้นทางความปลอดภัยไม่มีเทสถาวร ====
+
+// เทสนี้พิสูจน์ข้อสำคัญที่ 1 จากรีวิว: updated_at ไม่ unique — now() นิ่งตลอดทรานแซกชันเดียว
+// ไม่ใช่ clock_timestamp() ที่ขยับทุก statement สอง sos_event ที่ถูกอัปเดตจากทรานแซกชันคนละตัว
+// แต่ในช่วงเวลาเดียวกันจึงได้ updated_at เท่ากันเป๊ะได้จริง (เคสยิงเข้าพร้อมกันหลายเคสคือ
+// สถานการณ์ที่ฟีเจอร์นี้มีไว้รับมือ) เทียบด้วย > ตัวเดียวแล้ว cursor ของฝั่งเรียกลงล็อกที่ค่านั้น
+// พอดี ทำให้แถวที่เหลือตกหล่นถาวร (ไม่มีการแบ่งหน้าที่จะดึงกลับมาได้) บังคับ updated_at ให้ชน
+// กันตรงๆ ด้วย UPDATE แทนที่จะหวังให้ now() ชนกันเอง (ไม่น่าเชื่อถือพอจะเป็นเทส)
+func TestStaffFeedCursorSurvivesATieOnUpdatedAt(t *testing.T) {
+	skipWithoutDB(t)
+	ctx := context.Background()
+	repo1, p1 := newSOSTestRepo(t)
+	repo2, p2 := newSOSTestRepo(t)
+	admin := seedUserWithRole(t, "admin", "")
+
+	a, _, err := repo1.Raise(ctx, p1, model.SOSRequest{
+		ClientID: "c0de0001-0000-0000-0000-000000000001", DeviceTime: "2026-08-06T10:00:00Z",
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _, err := repo2.Raise(ctx, p2, model.SOSRequest{
+		ClientID: "c0de0001-0000-0000-0000-000000000002", DeviceTime: "2026-08-06T10:00:00Z",
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tie := "2026-08-06T10:05:00Z"
+	if _, err := repo1.db.Exec(ctx,
+		`UPDATE sos_event SET updated_at = $1::timestamptz WHERE id = $2`, tie, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo1.db.Exec(ctx,
+		`UPDATE sos_event SET updated_at = $1::timestamptz WHERE id = $2`, tie, b.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// id เล็กกว่าคือ "เก่ากว่า" ในความหมายของ (updated_at, id) แม้ updated_at ชนกันเป๊ะ
+	older, newer := a, b
+	if b.ID < a.ID {
+		older, newer = b, a
+	}
+
+	cursor := tie + "|" + strconv.FormatInt(older.ID, 10)
+	page, err := repo1.StaffFeed(ctx, admin, "admin", cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawNewer, sawOlder := false, false
+	for _, c := range page {
+		if c.ID == newer.ID {
+			sawNewer = true
+		}
+		if c.ID == older.ID {
+			sawOlder = true
+		}
+	}
+	if !sawNewer {
+		t.Fatalf("แถว id=%d มี updated_at ชนกับ cursor เป๊ะแต่ id มากกว่า ต้องยังเห็นได้หลัง poll รอบถัดไป", newer.ID)
+	}
+	if sawOlder {
+		t.Fatalf("แถว id=%d คือแถวที่ cursor ชี้ไว้แล้ว ต้องไม่ถูกส่งซ้ำอีก", older.ID)
+	}
+}
+
+// เทสนี้พิสูจน์ข้อสำคัญที่ 2 จากรีวิว ข้อแรก: กติกาข้อ 4 ของ staffVisibility (accuracy_m > 200)
+// แยกให้ชัดจากกติกาข้อ 3 ("ไม่มีใครประจำฐาน") โดยตั้งใจให้ฐานของเคสมีคนอื่นประจำอยู่จริง
+// (home) — ถ้า elsewhere ยังเห็นเคส accuracy แย่ได้ ต้องเป็นเพราะกติกาข้อ 4 เท่านั้น ไม่ใช่ข้อ 3
+func TestStaffFeedAccuracyOver200IsVisibleAcrossBasesButGoodAccuracyIsNot(t *testing.T) {
+	skipWithoutDB(t)
+	ctx := context.Background()
+	home := seedStaffAtCheckpoint(t, 6)       // เจ้าของฐาน 6 ตัวจริง
+	elsewhere := seedStaffAtCheckpoint(t, 10) // ประจำฐานอื่น ไม่ใช่ฐาน 6
+	_ = home
+
+	// เปิด pool ของผู้เข้าร่วมทั้งสองคน "ก่อน" Raise ทั้งคู่เสมอ — ห้ามสลับ เพราะ
+	// newSOSTestRepo เรียก openSOSTestDB ซึ่งลบ sos_event ที่ client_id อยู่ใน
+	// testSOSClientIDs ทิ้งทุกครั้งที่เปิด (กันรันก่อนหน้าตายกลางคัน) ถ้า Raise เคสแรกไปแล้ว
+	// ค่อยเรียก newSOSTestRepo รอบสอง เคสแรกที่เพิ่งสร้าง (client_id อยู่ในลิสต์นั้นด้วย)
+	// จะโดนลบทิ้งกลางเทสเงียบๆ — เจอบั๊กนี้จริงตอนเขียนเทสนี้ครั้งแรก ดู `openSOSTestDB` ด้านล่าง
+	repoBad, pBad := newSOSTestRepo(t)
+	repoGood, pGood := newSOSTestRepo(t)
+
+	badAcc := 250.0
+	bad, _, err := repoBad.Raise(ctx, pBad, model.SOSRequest{
+		ClientID: "acc00001-0000-0000-0000-000000000001", DeviceTime: "2026-08-06T10:00:00Z",
+		AccuracyM: &badAcc,
+	}, intPtr(6), strPtr("gps"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	goodAcc := 50.0
+	good, _, err := repoGood.Raise(ctx, pGood, model.SOSRequest{
+		ClientID: "acc00001-0000-0000-0000-000000000002", DeviceTime: "2026-08-06T10:00:00Z",
+		AccuracyM: &goodAcc,
+	}, intPtr(6), strPtr("gps"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := repoBad.StaffFeed(ctx, elsewhere, "staff", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenBad, seenGood := false, false
+	for _, c := range got {
+		if c.ID == bad.ID {
+			seenBad = true
+		}
+		if c.ID == good.ID {
+			seenGood = true
+		}
+	}
+	if !seenBad {
+		t.Fatal("accuracy_m=250 (>200) ต้องเห็นได้แม้ประจำฐานอื่น และฐาน 6 มีคนอื่นดูแลอยู่แล้วจริง")
+	}
+	if seenGood {
+		t.Fatal("accuracy_m=50 (แม่นพอ) ที่ฐานซึ่งมีคนอื่นประจำอยู่แล้ว ต้องไม่เห็น")
+	}
+}
+
+// เทสนี้พิสูจน์ข้อสำคัญที่ 2 จากรีวิว ข้อสอง: เงื่อนไขทั้งสามของ health-data gate ต้องจริง
+// พร้อมกันทั้งหมด — เคสฐานเห็นได้ครบ แล้วปลดทีละเงื่อนไข สามกรณีลบ ไม่ใช่กรณีเดียว
+func TestStaffFeedHealthDataGateNeedsConsentUnresolvedAndNotForOther(t *testing.T) {
+	skipWithoutDB(t)
+	ctx := context.Background()
+	admin := seedUserWithRole(t, "admin", "")
+
+	// เปิด pool ของผู้เข้าร่วมทั้งสามคน "ก่อน" Raise ทั้งสามเคสเสมอ — เหตุผลเดียวกับเทส
+	// accuracy ด้านบน: newSOSTestRepo แต่ละครั้งลบ sos_event ที่ client_id ตรงกับ
+	// testSOSClientIDs ทิ้งไปด้วย เคสที่ raise ไปก่อนจะโดนลบถ้าเรียก newSOSTestRepo แทรกทีหลัง
+	repo, participant := newSOSTestRepo(t)
+	repo2, participant2 := newSOSTestRepo(t)
+	repo3, participant3 := newSOSTestRepo(t)
+	seedConsent(t, participant, true)
+	seedHealthDetails(t, participant, "O+", "โรคหัวใจ")
+	seedConsent(t, participant2, true)
+	seedHealthDetails(t, participant2, "A+", "")
+	seedConsent(t, participant3, false)
+	seedHealthDetails(t, participant3, "B+", "")
+
+	// เคสฐาน: consent=true, ยังเปิดอยู่, for_other=false — ต้องเห็นข้อมูลสุขภาพครบ
+	c, _, err := repo.Raise(ctx, participant, model.SOSRequest{
+		ClientID: "ea700001-0000-0000-0000-000000000001", DeviceTime: "2026-08-06T10:00:00Z",
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := findCase(t, repo, admin, "admin", c.ID)
+	if row.BloodType == nil || *row.BloodType != "O+" {
+		t.Fatalf("consent=true, unresolved, for_other=false ต้องเห็น blood_type ได้ %v", row.BloodType)
+	}
+	if row.HealthNotes == nil || *row.HealthNotes == "" {
+		t.Fatal("ต้องเห็น health_notes ด้วยเงื่อนไขเดียวกัน")
+	}
+
+	// ปลดเงื่อนไขที่ 1: resolved — ปิดเคสเดิม ข้อมูลสุขภาพต้องหายแม้ consent ยัง true
+	if err := repo.Resolve(ctx, c.ID, admin, "helped"); err != nil {
+		t.Fatal(err)
+	}
+	row = findCase(t, repo, admin, "admin", c.ID)
+	if row.BloodType != nil || row.HealthNotes != nil {
+		t.Fatalf("ปิดเคสแล้วต้องไม่เห็นข้อมูลสุขภาพอีก ได้ blood=%v notes=%v", row.BloodType, row.HealthNotes)
+	}
+
+	// ปลดเงื่อนไขที่ 2: for_other — เคสใหม่ consent=true, unresolved, แต่ for_other=true
+	c2, _, err := repo2.Raise(ctx, participant2, model.SOSRequest{
+		ClientID: "ea700001-0000-0000-0000-000000000002", DeviceTime: "2026-08-06T10:00:00Z",
+		ForOther: true,
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row = findCase(t, repo2, admin, "admin", c2.ID)
+	if row.BloodType != nil {
+		t.Fatalf("for_other=true ต้องไม่เห็น blood_type แม้ consent=true และยัง unresolved ได้ %v", *row.BloodType)
+	}
+
+	// ปลดเงื่อนไขที่ 3: consent — เคสใหม่ unresolved, for_other=false, แต่ consent=false
+	c3, _, err := repo3.Raise(ctx, participant3, model.SOSRequest{
+		ClientID: "ea700001-0000-0000-0000-000000000003", DeviceTime: "2026-08-06T10:00:00Z",
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row = findCase(t, repo3, admin, "admin", c3.ID)
+	if row.BloodType != nil {
+		t.Fatalf("consent_health_data=false ต้องไม่เห็น blood_type ได้ %v", *row.BloodType)
+	}
+}
+
+// เทสนี้พิสูจน์ข้อสำคัญที่ 2 จากรีวิว ข้อสาม: PushAudience ตัดสินว่าใครถูกปลุกเรื่องเคสฉุกเฉิน
+// จริง — assertion ที่สำคัญที่สุดคือบรรทัดสุดท้าย: กลุ่มเพื่อนต้องไม่มี token ของคนกดเอง
+func TestPushAudienceReturnsBaseStaffCentralStaffAndGroupmatesExcludingThePresser(t *testing.T) {
+	skipWithoutDB(t)
+	ctx := context.Background()
+
+	groupID := seedGroup(t)
+	repo, presser := newSOSTestRepo(t)
+	_, groupmate := newSOSTestRepo(t)
+	setParticipantGroup(t, presser, groupID)
+	setParticipantGroup(t, groupmate, groupID)
+
+	baseStaff := seedStaffAtCheckpoint(t, 11)
+	medic := seedUserWithRole(t, "staff", "medical")
+
+	baseToken := seedDeviceToken(t, baseStaff)
+	medicToken := seedDeviceToken(t, medic)
+	presserToken := seedDeviceToken(t, presser)
+	groupmateToken := seedDeviceToken(t, groupmate)
+
+	c, _, err := repo.Raise(ctx, presser, model.SOSRequest{
+		ClientID: "add00001-0000-0000-0000-000000000001", DeviceTime: "2026-08-06T10:00:00Z",
+	}, intPtr(11), strPtr("gps"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := repo.PushAudience(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsStr(a.StaffTokens, baseToken) {
+		t.Fatalf("StaffTokens ต้องมี token ของเจ้าหน้าที่ประจำฐาน ได้ %v", a.StaffTokens)
+	}
+	if !containsStr(a.CentralTokens, medicToken) {
+		t.Fatalf("CentralTokens ต้องมี token ของ medical ได้ %v", a.CentralTokens)
+	}
+	if !containsStr(a.GroupTokens, groupmateToken) {
+		t.Fatalf("GroupTokens ต้องมี token ของเพื่อนร่วมกลุ่ม ได้ %v", a.GroupTokens)
+	}
+	if containsStr(a.GroupTokens, presserToken) {
+		t.Fatal("GroupTokens ต้องไม่มี token ของคนกดเอง — เขาไม่ควรได้แจ้งเตือนเรื่องที่ตัวเองกด")
+	}
+}
+
+// เทสนี้พิสูจน์ข้อสำคัญที่ 2 จากรีวิว ข้อสี่: CanStaffSee ต้องให้ผลตรงกับ StaffFeed เพราะเป็น
+// ประตูของ Ack/Resolve — เจ้าหน้าที่ฐานอื่นเห็นเคสไม่ได้ ต้อง Ack/Resolve ไม่ได้ด้วย
+func TestCanStaffSeeMatchesStaffFeedVisibility(t *testing.T) {
+	skipWithoutDB(t)
+	ctx := context.Background()
+	repo, participant := newSOSTestRepo(t)
+	home := seedStaffAtCheckpoint(t, 12)
+	elsewhere := seedStaffAtCheckpoint(t, 1) // ฐานอื่น และฐาน 12 มี home ประจำอยู่แล้วจริง
+	admin := seedUserWithRole(t, "admin", "")
+	medic := seedUserWithRole(t, "staff", "medical")
+
+	c, _, err := repo.Raise(ctx, participant, model.SOSRequest{
+		ClientID: "ca500001-0000-0000-0000-000000000001", DeviceTime: "2026-08-06T10:00:00Z",
+	}, intPtr(12), strPtr("gps"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[string]struct {
+		id, role string
+		want     bool
+	}{
+		"เจ้าหน้าที่ประจำฐาน": {home, "staff", true},
+		"admin":   {admin, "admin", true},
+		"medical": {medic, "staff", true},
+		"เจ้าหน้าที่ฐานอื่น": {elsewhere, "staff", false},
+	}
+	for name, tc := range cases {
+		ok, err := repo.CanStaffSee(ctx, tc.id, tc.role, c.ID)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if ok != tc.want {
+			t.Fatalf("%s: ต้องการ %v ได้ %v", name, tc.want, ok)
+		}
+	}
+}
+
 /*
 newSOSTestRepo / seedStaffUser — ทรงเดียวกับ openTestDB ใน wbw_feedback_repository_test.go:
 เปิด pool จาก WBW_TEST_DSN (fallback ไป .env ที่ root แบบเดียวกัน) แล้วปิดเองตอนจบเทส
@@ -313,10 +590,27 @@ var testSOSClientIDs = []string{
 	"ffffffff-0000-0000-0000-000000000001", "ffffffff-0000-0000-0000-000000000002",
 	"f0000000-0000-0000-0000-000000000001", "f0000000-0000-0000-0000-000000000002",
 	"f0000000-0000-0000-0000-000000000003", "f0000000-0000-0000-0000-000000000004",
+	"c0de0001-0000-0000-0000-000000000001", "c0de0001-0000-0000-0000-000000000002",
+	"acc00001-0000-0000-0000-000000000001", "acc00001-0000-0000-0000-000000000002",
+	"ea700001-0000-0000-0000-000000000001", "ea700001-0000-0000-0000-000000000002",
+	"ea700001-0000-0000-0000-000000000003",
+	"add00001-0000-0000-0000-000000000001",
+	"ca500001-0000-0000-0000-000000000001",
 }
 
 // openSOSTestDB — เปิด pool ทดสอบหนึ่งตัว แล้วล้างเคสทดสอบเก่า (ถ้ามีค้างจากรันก่อนหน้า
 // ที่ตายกลางคัน) ก่อนเทสเริ่มจริง
+//
+// ข้อควรระวังสำหรับเทสที่จะเขียนเพิ่ม: ฟังก์ชันนี้ถูกเรียกจากทุก seed helper ในไฟล์นี้
+// (newSOSTestRepo, seedStaffAtCheckpoint, seedUserWithRole, seedDeviceToken, ฯลฯ) และการ
+// ลบ sos_event ที่ client_id ตรงกับ testSOSClientIDs ด้านล่างนี้ "ไม่ได้เกิดแค่ครั้งแรกที่เปิด
+// pool ของเทส" — เกิดทุกครั้งที่มีการเรียก seed helper ตัวไหนก็ตามในไฟล์นี้ ถ้าเทสหนึ่ง raise
+// เคสไปแล้ว (ด้วย client_id ที่อยู่ในลิสต์) แล้วค่อยเรียก seed helper ตัวใหม่ (เช่น
+// newSOSTestRepo ของผู้เข้าร่วมคนที่สอง) เคสที่เพิ่ง raise จะโดนลบทิ้งเงียบๆ กลางเทส — เจอบั๊กนี้
+// จริงตอนเขียน TestStaffFeedAccuracyOver200IsVisibleAcrossBasesButGoodAccuracyIsNot ครั้งแรก
+// (ผลลัพธ์ StaffFeed ว่างเปล่าทั้งที่ควรมี 1 แถว) กติกาที่ปลอดภัย: เรียก seed helper ทุกตัวที่
+// ต้องใช้ "ก่อน" Raise เคสแรกเสมอ อย่าแทรก seed helper ตัวใหม่ระหว่างเคสที่ raise ไปแล้วกับ
+// เคสที่ยังไม่ได้ใช้งาน
 func openSOSTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	if os.Getenv("WBW_DB_TESTS") != "1" {
@@ -513,6 +807,119 @@ func seedUserWithRole(t *testing.T, role, staffRole string) string {
 	}
 
 	return userID
+}
+
+// seedGroup — กลุ่มทดสอบใหม่หนึ่งกลุ่ม เลข group_number เลือกจาก MAX+1 กันชนของเดิม (คอลัมน์
+// unique ทั้งตาราง ไม่มี default ให้ฐานข้อมูลสุ่มเอง) ลบทิ้งตอนจบเทสเสมอ
+//
+// ต้องเรียกตัวนี้ "ก่อน" newSOSTestRepo ของผู้เข้าร่วมที่จะเข้ากลุ่มนี้เสมอ (ดูลำดับเรียกใน
+// เทสที่ใช้จริง) — LIFO: cleanup ที่ลงทะเบียนก่อนจะรันทีหลัง ต้องให้แถว participant_profile
+// ที่อ้างกลุ่มนี้หายไปก่อน (cascade มาจาก wbw_user ที่ newSOSTestRepo ลบให้) แล้ว
+// participant_group ถึงจะลบได้โดยไม่ชน FK — group_id ไม่มี ON DELETE CASCADE ฝั่งนั้น
+func seedGroup(t *testing.T) int {
+	t.Helper()
+	pool := openSOSTestDB(t)
+	ctx := context.Background()
+
+	var groupID int
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO participant_group (group_number)
+		SELECT COALESCE(MAX(group_number), 0) + 1 FROM participant_group
+		RETURNING group_id`).Scan(&groupID); err != nil {
+		t.Fatalf("สร้างกลุ่มทดสอบไม่สำเร็จ: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(),
+			`DELETE FROM participant_group WHERE group_id = $1`, groupID); err != nil {
+			t.Errorf("ล้างกลุ่มทดสอบไม่สำเร็จ: %v", err)
+		}
+	})
+	return groupID
+}
+
+// setParticipantGroup — ตั้ง group_id ให้ผู้เข้าร่วมทดสอบที่มีอยู่แล้ว ไม่ต้อง cleanup แยก —
+// แถวหายไปทั้งแถวเมื่อ newSOSTestRepo ลบ wbw_user ของเจ้าของ (cascade ไป participant_profile)
+func setParticipantGroup(t *testing.T, participantID string, groupID int) {
+	t.Helper()
+	pool := openSOSTestDB(t)
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE participant_profile SET group_id = $1 WHERE user_id = $2::uuid`,
+		groupID, participantID); err != nil {
+		t.Fatalf("ตั้งกลุ่มให้ผู้เข้าร่วมทดสอบไม่สำเร็จ: %v", err)
+	}
+}
+
+// seedDeviceToken — token อุปกรณ์หนึ่งอันของผู้ใช้ที่ระบุ (participant หรือ staff ก็ได้)
+// ลบทิ้งตอนจบเทสเสมอ — ปลอดภัยไม่ว่าจะรันก่อนหรือหลังตัวผู้ใช้ถูกลบ (device_token.user_id
+// เป็น ON DELETE CASCADE จาก wbw_user อยู่แล้ว ลบซ้ำด้วย token ที่หายไปแล้วเป็นแค่ no-op)
+func seedDeviceToken(t *testing.T, userID string) string {
+	t.Helper()
+	pool := openSOSTestDB(t)
+	ctx := context.Background()
+
+	token := "sos-device-" + newUUID()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO device_token (token, user_id, platform) VALUES ($1, $2::uuid, 'ios')`,
+		token, userID); err != nil {
+		t.Fatalf("สร้าง device token ทดสอบไม่สำเร็จ: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(),
+			`DELETE FROM device_token WHERE token = $1`, token); err != nil {
+			t.Errorf("ล้าง device token ทดสอบไม่สำเร็จ: %v", err)
+		}
+	})
+	return token
+}
+
+// seedConsent — ตั้งค่า consent_health_data ของผู้เข้าร่วมทดสอบที่ระบุ ไม่ต้อง cleanup แยก
+// (เหตุผลเดียวกับ setParticipantGroup — cascade ไปกับ wbw_user ที่ newSOSTestRepo ลบให้)
+func seedConsent(t *testing.T, participantID string, consentHealthData bool) {
+	t.Helper()
+	pool := openSOSTestDB(t)
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO consent (user_id, consent_health_data) VALUES ($1::uuid, $2)`,
+		participantID, consentHealthData); err != nil {
+		t.Fatalf("ตั้งค่า consent ทดสอบไม่สำเร็จ: %v", err)
+	}
+}
+
+// seedHealthDetails — ข้อมูลสุขภาพของผู้เข้าร่วมทดสอบที่ระบุ ไม่ต้อง cleanup แยกด้วยเหตุผลเดียวกัน
+func seedHealthDetails(t *testing.T, participantID, bloodType, chronicDisease string) {
+	t.Helper()
+	pool := openSOSTestDB(t)
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO health_details (user_id, blood_type, chronic_disease)
+		 VALUES ($1::uuid, $2::blood_type, NULLIF($3,''))`,
+		participantID, bloodType, chronicDisease); err != nil {
+		t.Fatalf("ตั้งค่าข้อมูลสุขภาพทดสอบไม่สำเร็จ: %v", err)
+	}
+}
+
+// findCase — หาเคสจาก id ในผลลัพธ์ StaffFeed ของ viewer ที่ระบุ — เทสไม่ต้องไล่ index เอง
+func findCase(t *testing.T, repo *WBWSOSRepository, viewerID, role string, id int64) *model.SOSStaffCase {
+	t.Helper()
+	feed, err := repo.StaffFeed(context.Background(), viewerID, role, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range feed {
+		if feed[i].ID == id {
+			return &feed[i]
+		}
+	}
+	t.Fatalf("ไม่เจอเคส id=%d ในฟีดของ %s", id, viewerID)
+	return nil
+}
+
+// containsStr — เช็คว่า token ที่ต้องการอยู่ใน []string ที่ PushAudience คืนมาไหม (ไม่สนลำดับ)
+func containsStr(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func intPtr(i int) *int       { return &i }

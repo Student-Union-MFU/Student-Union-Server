@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 
 	"su-server/internal/model"
 
@@ -350,11 +351,13 @@ func (r *WBWSOSRepository) PushAllowed(ctx context.Context, id int64) (bool, err
 
 // staffVisibility — เงื่อนไข WHERE ที่ตัดสินว่าเจ้าหน้าที่คนหนึ่งเห็นเคสไหนได้บ้าง
 //
-// สามทางที่ทำให้เห็น เรียงตามความตั้งใจ:
+// สี่ทางที่ทำให้เห็น เรียงตามความตั้งใจ:
 //  1. เป็นฐานที่ตัวเองถูก assign
 //  2. เคสไม่มีฐาน (ไม่มีพิกัดเลย) — ไม่มีใครเป็นเจ้าของ ทุกคนจึงต้องเห็น
 //  3. ฐานนั้นไม่มีใครถูก assign เลย — "ไม่มีใครถูกมอบหมาย = ทุกคนเห็น" ปลอดภัยกว่า
 //     "ไม่มีใครเห็น" และเป็นตาข่ายรองรับ checkpoint_staff ที่ยังว่างบน production
+//  4. พิกัดไม่แม่นพอ (accuracy_m > 200 เมตร) — ฐานที่คำนวณได้ไม่น่าเชื่อถือพอจะใช้จำกัดว่าใคร
+//     ควรเห็น ให้ทุกคนเห็นไว้ก่อนปลอดภัยกว่าไปผูกกับฐานที่อาจคำนวณผิด
 //
 // admin กับ medical/security ไม่เข้าเงื่อนไขนี้เลย — เห็นทุกเคสอยู่แล้ว
 const staffVisibility = `(
@@ -382,6 +385,17 @@ func (r *WBWSOSRepository) seesEverything(ctx context.Context, userID, role stri
 //
 // ทำไมต้องมีเคสที่ปิดแล้ว: ฐานที่เพิ่งวิ่งไปช่วยต้องเห็นว่าเรื่องจบแล้ว ไม่ใช่เห็นเคส
 // หายไปเฉยๆ ซึ่งแยกไม่ออกจาก "แอปโหลดไม่ขึ้น"
+//
+// since — cursor รูปแบบ "<updated_at>|<id>" ของแถวล่าสุดที่ผู้เรียก (แอป) เคยเห็นมาก่อน
+// ไม่ใช่ timestamp เดี่ยวๆ — ฝั่งที่เรียกต้อง echo ค่านี้กลับมาให้ตรงฟอร์แมตเป๊ะทุกครั้งที่ poll
+// รอบถัดไป เหตุผล: updated_at ไม่ unique (สอง sos_event อัปเดตพร้อมกันได้ค่าเดียวกันเป๊ะ — now()
+// ในทรานแซกชันเดียวกันค่าเดียวตลอด และเคสยิงเข้าพร้อมกันหลายเคสคือสถานการณ์ที่ฟีเจอร์นี้มีไว้รับมือ)
+// เทียบด้วย > ตัวเดียวจึงมีโอกาสทำให้แถวที่ updated_at ชนกันเป๊ะๆ ตกหล่นถาวรถ้า cursor ของฝั่ง
+// เรียกลงล็อกที่ค่านั้นพอดี — ไม่ใช่แค่ช้า แต่ไม่มีทางเห็นอีกเลยเพราะไม่มีการแบ่งหน้า จึงต้องเทียบ
+// แบบ row-value (updated_at, id) > (cursor_time, cursor_id) แทน — id เป็น bigserial ไม่ซ้ำกันเลย
+// ตัดเสมอได้เสมอ ไม่มีทางเสมอกันสองแถว · ค่าที่ไม่มี "|" ตีความ id เป็น 0 (ให้ client เดิมที่ยังส่ง
+// timestamp เดี่ยวๆ ทำงานต่อได้ และพลอยได้ผลข้างเคียงที่ดีขึ้น ไม่ใช่แย่ลง) · ค่าว่างเปล่า = ไม่กรอง
+// อะไรเลยเหมือนเดิม
 func (r *WBWSOSRepository) StaffFeed(ctx context.Context, staffID, role, since string) ([]model.SOSStaffCase, error) {
 	all, err := r.seesEverything(ctx, staffID, role)
 	if err != nil {
@@ -391,7 +405,8 @@ func (r *WBWSOSRepository) StaffFeed(ctx context.Context, staffID, role, since s
 	// ก็ต่อเมื่อ !all เท่านั้น ถ้า all = true (admin/medical/security) จะไม่มี $1 อยู่ใน SQL เลย
 	// การยัด staffID เข้า args แบบไม่มีเงื่อนไข (เหมือนโค้ดตั้งต้น) ทำให้ pgx ปฏิเสธด้วย
 	// "expected 0 arguments, got 1" ทันทีที่ all = true — เลขตำแหน่งของ since จึงคำนวณจาก
-	// len(args) ปัจจุบัน แทนที่จะเป็น $2 ตายตัว
+	// len(args) ปัจจุบัน แทนที่จะเป็นเลขตายตัว เพื่อให้ถูกต้องครบทั้งสี่ชุดค่าผสมของ
+	// (all, since ว่างหรือไม่)
 	where := `(NOT s.resolved OR s.resolved_at > now() - interval '30 minutes')`
 	args := []any{}
 	if !all {
@@ -399,8 +414,16 @@ func (r *WBWSOSRepository) StaffFeed(ctx context.Context, staffID, role, since s
 		args = append(args, staffID)
 	}
 	if since != "" {
-		where += ` AND s.updated_at > $` + strconv.Itoa(len(args)+1) + `::timestamptz`
-		args = append(args, since)
+		// แยก "<updated_at>|<id>" ด้วยมือ ไม่ใช้ strconv.ParseInt กับส่วน id — ปล่อยให้ Postgres
+		// เป็นคนแปลง/ตรวจทั้งสองส่วนผ่าน ::timestamptz กับ ::bigint เหมือนที่ req.DeviceTime
+		// ทำอยู่แล้วที่อื่นในไฟล์นี้ ไม่ต้องมี error path ฝั่ง Go เพิ่มสำหรับ cursor ที่พังรูปแบบ
+		sinceTime, sinceID, hasID := strings.Cut(since, "|")
+		if !hasID {
+			sinceID = "0"
+		}
+		where += ` AND (s.updated_at, s.id) > ($` + strconv.Itoa(len(args)+1) + `::timestamptz, $` +
+			strconv.Itoa(len(args)+2) + `::bigint)`
+		args = append(args, sinceTime, sinceID)
 	}
 
 	rows, err := r.db.Query(ctx, sosStaffSelect+` WHERE `+where+` ORDER BY s.updated_at DESC`, args...)
@@ -515,6 +538,14 @@ func (r *WBWSOSRepository) tokens(ctx context.Context, sql string, args ...any) 
 }
 
 // CanStaffSee — ใช้กับ ack/resolve ซึ่งอ้าง id ตรงๆ ไม่ได้ผ่าน feed
+//
+// COALESCE(...,FALSE) ที่ห่อ staffVisibility ไว้ไม่ใช่ของประดับ: s.accuracy_m > 200 เป็น NULL
+// (ไม่ใช่ FALSE) เมื่อ accuracy_m เป็น NULL ซึ่งเกิดได้จริง — checkpoint_id มาจาก
+// LastCheckinCheckpoint ตอนไม่มี GPS สดได้ โดยไม่มีค่าความแม่นยำติดมาด้วย ถ้าอีกสามเงื่อนไข
+// เป็น FALSE ทั้งหมด OR ทั้งชุดจะได้ NULL ไม่ใช่ FALSE ใน WHERE ของ StaffFeed ไม่มีปัญหา (NULL
+// ทำงานเหมือน FALSE อยู่แล้ว) แต่ที่นี่ SELECT ค่านี้ตรงๆ มา Scan ใส่ bool — pgx สแกน NULL ใส่
+// ตัวแปร bool ธรรมดาไม่ได้ ("cannot scan NULL into *bool") COALESCE จึงทำให้ NULL กลายเป็น
+// false อย่างชัดเจนก่อนถึง Scan ซึ่งตรงกับความหมายเดิม (ไม่เข้าเงื่อนไขพิเศษข้อไหนเลย = มองไม่เห็น)
 func (r *WBWSOSRepository) CanStaffSee(ctx context.Context, staffID, role string, caseID int64) (bool, error) {
 	all, err := r.seesEverything(ctx, staffID, role)
 	if err != nil || all {
@@ -522,7 +553,8 @@ func (r *WBWSOSRepository) CanStaffSee(ctx context.Context, staffID, role string
 	}
 	var ok bool
 	err = r.db.QueryRow(ctx,
-		`SELECT `+staffVisibility+` FROM sos_event s WHERE s.id = $2`, staffID, caseID).Scan(&ok)
+		`SELECT COALESCE(`+staffVisibility+`, FALSE) FROM sos_event s WHERE s.id = $2`,
+		staffID, caseID).Scan(&ok)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, ErrSOSNotFound
 	}
