@@ -31,7 +31,8 @@ func (e *SOSEvents) Start(ctx context.Context) { go e.listenLoop(ctx) }
 func (e *SOSEvents) listenLoop(ctx context.Context) {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		if err := e.listenOnce(ctx); err != nil && ctx.Err() == nil {
+		resetBackoff := func() { backoff = time.Second }
+		if err := e.listenOnce(ctx, resetBackoff); err != nil && ctx.Err() == nil {
 			slog.Error("sos listener หลุด กำลังต่อใหม่", "err", err, "in", backoff)
 			select {
 			case <-time.After(backoff):
@@ -43,11 +44,10 @@ func (e *SOSEvents) listenLoop(ctx context.Context) {
 			}
 			continue
 		}
-		backoff = time.Second
 	}
 }
 
-func (e *SOSEvents) listenOnce(ctx context.Context) error {
+func (e *SOSEvents) listenOnce(ctx context.Context, onConnected func()) error {
 	conn, err := e.dial(ctx)
 	if err != nil {
 		return err
@@ -56,6 +56,10 @@ func (e *SOSEvents) listenOnce(ctx context.Context) error {
 
 	if _, err := conn.Exec(ctx, "LISTEN "+sosChannel); err != nil {
 		return err
+	}
+	// เมื่อ LISTEN สำเร็จ ถือว่าต่อแล้ว — รีเซต backoff เพื่อให้ disconnect ต่อไปเริ่มจาก 1 วินาที
+	if onConnected != nil {
+		onConnected()
 	}
 	slog.Info("sos listener ต่อแล้ว", "channel", sosChannel)
 
