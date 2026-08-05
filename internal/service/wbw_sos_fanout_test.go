@@ -91,9 +91,9 @@ func newFakeSOSNoti() *fakeSOSNoti {
 	return &fakeSOSNoti{created: make(chan model.NotificationRequest, 8)}
 }
 
-func (f *fakeSOSNoti) Create(_ context.Context, req model.NotificationRequest, _ string) (int64, error) {
+func (f *fakeSOSNoti) Create(_ context.Context, req model.NotificationRequest, _ string) (*model.Notification, error) {
 	f.created <- req
-	return 1, nil
+	return &model.Notification{}, nil
 }
 
 func drainOne(t *testing.T, ch chan sentPush) sentPush {

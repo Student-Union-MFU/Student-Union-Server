@@ -51,9 +51,19 @@ type sosPush interface {
 	SendToTokens(ctx context.Context, tokens []string, title, body string, data map[string]string)
 }
 
+// ลายเซ็นต้องตรงกับ *WBWNotificationService.Create ของจริงเป๊ะ ไม่ใช่ตามที่อยากให้เป็น —
+// มันคืน (*model.Notification, error) ไม่ใช่ (int64, error) · service นี้ทิ้งค่าที่คืนมาอยู่แล้ว
+// แต่ถ้าลายเซ็นไม่ตรง cmd/main.go จะคอมไพล์ไม่ผ่านตอนเอา service จริงมาเสียบ
 type sosNoti interface {
-	Create(ctx context.Context, req model.NotificationRequest, actorID string) (int64, error)
+	Create(ctx context.Context, req model.NotificationRequest, actorID string) (*model.Notification, error)
 }
+
+// ยืนยันตอนคอมไพล์ว่า service จริงยังเข้ากับ interface นี้ได้ — ของปลอมในเทสยืนยันแทนไม่ได้
+var _ sosNoti = (*WBWNotificationService)(nil)
+
+// sosPush ยังไม่มี var _ sosPush = (*WBWPushService)(nil) แบบเดียวกัน เพราะ WBWPushService
+// ยังไม่มีเมธอด SendToTokens ณ ตอนที่เขียนไฟล์นี้ — Task 7 เป็นคนเพิ่ม (ดู task-7-brief.md
+// Step 5) ถ้าเพิ่ม assertion ตรงนี้ตอนนี้จะคอมไพล์ไม่ผ่านทันที ปล่อยให้ Task 7 เติมเอง
 
 type WBWSOSService struct {
 	repo           sosRepo
