@@ -32,6 +32,13 @@ type SOSCase struct {
 	CreatedAt      string   `json:"created_at"`
 	// EmergencyPhone — เบอร์กลางงาน แนบมากับทุกคำตอบเพื่อให้แอปอัปเดตค่าที่ cache ไว้
 	EmergencyPhone string `json:"emergency_phone"`
+	// GroupID — กลุ่มของคนกด · `json:"-"` เพราะไม่ใช่ข้อมูลที่แอปต้องใช้ ไม่ควรเปลี่ยนรูป
+	// JSON ที่ฝั่ง iOS พึ่งพาอยู่ เป็นค่าที่ service ต้องใช้ "ภายใน" เท่านั้น: notifyGroup ต้องรู้
+	// ว่าจะยิงแถวแจ้งเตือนไปที่กลุ่มไหน (notification.audience_id) — ก่อนหน้านี้ SOSCase ไม่มี
+	// ค่านี้เลย AudienceID จึงถูกปล่อยว่าง แถวที่สร้างได้ไม่มีวันถูก ListForUser หยิบขึ้นมาให้ใคร
+	// (เงื่อนไขคือ n.audience_id = p.group_id::text ซึ่ง NULL ไม่มีวันเท่ากับอะไร) · nil ได้จริง
+	// เมื่อคนกดยังไม่ถูกจัดกลุ่ม — ในกรณีนั้นไม่มีกลุ่มให้แจ้ง ก็ไม่ต้องสร้างแถว
+	GroupID *int `json:"-"`
 }
 
 // SOSStaffCase — เคสหนึ่งอันในสายตาเจ้าหน้าที่ ข้อมูลมากกว่าที่คนกดเห็น

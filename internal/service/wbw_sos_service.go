@@ -128,7 +128,7 @@ func (s *WBWSOSService) Raise(ctx context.Context, participantID string, req mod
 	}
 	c.EmergencyPhone = s.emergencyPhone
 
-	s.announce(ctx, c, created)
+	s.announce(ctx, participantID, c, created)
 	return c, created, nil
 }
 
@@ -136,7 +136,7 @@ func (s *WBWSOSService) Raise(ctx context.Context, participantID string, req mod
 //
 // context.WithoutCancel เพราะ ctx ของ request ถูกยกเลิกทันทีที่ตอบ response เสร็จ
 // goSafe เพราะ chi.Recoverer ครอบแค่ goroutine ของ request — panic ตรงนี้จะฆ่าโปรเซสทั้งเครื่อง
-func (s *WBWSOSService) announce(ctx context.Context, c *model.SOSCase, created bool) {
+func (s *WBWSOSService) announce(ctx context.Context, participantID string, c *model.SOSCase, created bool) {
 	detached := context.WithoutCancel(ctx)
 	goSafe("sos.announce", func() {
 		cc, cancel := context.WithTimeout(detached, sosNotifyTimeout)
@@ -176,7 +176,7 @@ func (s *WBWSOSService) announce(ctx context.Context, c *model.SOSCase, created 
 
 		// กลุ่มเพื่อนได้แค่ตอนเปิดกับตอนปิดเท่านั้น — ย้ำและอัปเดตพิกัดไม่ยิงซ้ำเข้ากลุ่ม
 		if created {
-			s.notifyGroup(cc, c, aud.GroupTokens, base)
+			s.notifyGroup(cc, participantID, c, aud.GroupTokens, base)
 		}
 		if err := s.repo.MarkPushed(cc, c.ID); err != nil {
 			slog.Error("จดเวลา push ของ SOS ไม่สำเร็จ", "err", err)
@@ -184,7 +184,21 @@ func (s *WBWSOSService) announce(ctx context.Context, c *model.SOSCase, created 
 	})
 }
 
-func (s *WBWSOSService) notifyGroup(ctx context.Context, c *model.SOSCase, tokens []string, base string) {
+// notifyGroup — แถวแจ้งเตือนในแอป + push ให้กลุ่มของคนกด
+//
+// สามค่าที่ต้อง "ตรงกับฐานข้อมูลจริง" ไม่ใช่ตรงกับที่อยากให้เป็น — พลาดทั้งสามเงียบสนิท เพราะ
+// error ของ Create ถูก slog.Error กลืน แล้ว push ยิงต่อตามปกติเหมือนไม่มีอะไรเกิดขึ้น:
+//
+//  1. level ต้องเป็นสมาชิกของ enum noti_level ('info','warning','emergency') — เดิมเป็น "urgent"
+//     ซึ่งไม่มีอยู่จริง repository cast $4::noti_level ทำให้ INSERT พังทุกครั้งไม่มียกเว้น
+//  2. AudienceID ต้องเป็น group_id ของคนกด — ListForUser เทียบ
+//     `n.audience = 'group' AND n.audience_id = p.group_id::text` ปล่อยว่างไว้แถวจะมองไม่เห็นจาก
+//     ทุกคนตลอดกาล (NULL = '3' ไม่ใช่ TRUE) ต่อให้ level ถูกแล้วก็ตาม
+//  3. createdBy ต้องเป็น UUID จริง — notification.created_by เป็นคอลัมน์ UUID ที่อ้าง wbw_user
+//     ส่ง "" ไปตรงๆ pgx แปลงเป็น uuid ไม่ได้ ทรงเดียวกับที่ notifyFeedback ส่ง participantID
+//
+// ไม่มีกลุ่ม (คนกดยังไม่ถูกจัดกลุ่ม) = ไม่มีใครให้แจ้ง ข้ามแถวไปเลย ไม่ใช่สร้างแถวที่ไม่มีปลายทาง
+func (s *WBWSOSService) notifyGroup(ctx context.Context, participantID string, c *model.SOSCase, tokens []string, base string) {
 	verb := "ขอความช่วยเหลือ"
 	if c.ForOther {
 		verb = "แจ้งว่ามีคนเจ็บ"
@@ -192,13 +206,14 @@ func (s *WBWSOSService) notifyGroup(ctx context.Context, c *model.SOSCase, token
 	title := "เพื่อนในกลุ่ม" + verb
 	body := base + " · แตะเพื่อดูตำแหน่ง"
 
-	if s.noti != nil {
-		typ, audience, level := "sos", "group", "urgent"
+	if s.noti != nil && c.GroupID != nil {
+		typ, audience, level := "sos", "group", "emergency"
 		ref := strconv.FormatInt(c.ID, 10)
+		audienceID := strconv.Itoa(*c.GroupID)
 		if _, err := s.noti.Create(ctx, model.NotificationRequest{
 			Type: &typ, Title: title, Body: &body, Level: &level,
-			Audience: &audience, RefID: &ref,
-		}, ""); err != nil {
+			Audience: &audience, AudienceID: &audienceID, RefID: &ref,
+		}, participantID); err != nil {
 			slog.Error("สร้างแถวแจ้งเตือน SOS ของกลุ่มไม่สำเร็จ", "err", err)
 		}
 	}

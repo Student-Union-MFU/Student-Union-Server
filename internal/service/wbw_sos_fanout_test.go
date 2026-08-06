@@ -122,8 +122,11 @@ func tokenKey(p sentPush) string { return fmt.Sprintf("%v", p.tokens) }
 // (ครั้งแรกของสองครั้งที่กลุ่มมีสิทธิ์ได้) และต้องจดเวลา push ไว้ด้วย (MarkPushed)
 func TestAnnounceOnCreatePushesStaffCentralGroupAndMarksPushed(t *testing.T) {
 	push, noti := newFakeSOSPush(), newFakeSOSNoti()
+	// GroupID ต้องมีค่าจริง — notifyGroup ใช้เป็น notification.audience_id · เคสที่ไม่มีกลุ่มก็ไม่มี
+	// ใครให้แจ้ง จึงข้ามการสร้างแถวไปเลยโดยตั้งใจ (ดูคอมเมนต์ที่ notifyGroup)
+	group := 7
 	repo := &fanoutFakeRepo{
-		raised:  &model.SOSCase{ID: 42},
+		raised:  &model.SOSCase{ID: 42, GroupID: &group},
 		created: true,
 		audience: &repository.SOSAudience{
 			StaffTokens: []string{"staff-1"}, CentralTokens: []string{"central-1"}, GroupTokens: []string{"group-1"},
@@ -147,8 +150,17 @@ func TestAnnounceOnCreatePushesStaffCentralGroupAndMarksPushed(t *testing.T) {
 	}
 	assertNoMorePush(t, push.sent)
 
+	// ค่าที่ส่งเข้า Create ต้องตรงกับ "สิ่งที่ฐานข้อมูลยอมรับ" ไม่ใช่แค่ว่ามีการเรียกเกิดขึ้น —
+	// การพิสูจน์จริงว่าแถวเกิดขึ้นได้อยู่ที่ TestRaiseNotifyGroupWritesARowTheGroupCanActuallySee
+	// (แตะ Postgres จริง) ตรงนี้แค่ค้ำไม่ให้ค่าเพี้ยนกลับไปโดยไม่มีใครเห็น
 	select {
-	case <-noti.created:
+	case req := <-noti.created:
+		if req.Level == nil || *req.Level != "emergency" {
+			t.Fatalf("level ต้องเป็น emergency (สมาชิกของ enum noti_level) ได้ %v", req.Level)
+		}
+		if req.AudienceID == nil || *req.AudienceID != "7" {
+			t.Fatalf("audience_id ต้องเป็นกลุ่มของคนกด ได้ %v", req.AudienceID)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("เคสเปิดใหม่ต้องสร้างแถวแจ้งเตือนให้กลุ่มด้วย ไม่ใช่แค่ push")
 	}

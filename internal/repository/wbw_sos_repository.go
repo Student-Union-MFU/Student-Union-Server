@@ -211,10 +211,12 @@ func (r *WBWSOSRepository) Get(ctx context.Context, id int64) (*model.SOSCase, e
 
 // sosSelect — created_at/acked_at ต้อง ::text เพราะ pgx v5 โหมด binary คืน timestamptz
 // เป็น time.Time ซึ่ง scan เข้า *string ไม่ได้ (ทรงเดียวกับ repository ตัวอื่นในนี้)
+// s.group_id อยู่ท้ายสุด — service ใช้ตัดสินว่าแถวแจ้งเตือนของกลุ่มควรไปถึงกลุ่มไหน
+// (notification.audience_id) ไม่ได้ออกทาง JSON เลย ดูคอมเมนต์ที่ model.SOSCase.GroupID
 const sosSelect = `
 	SELECT s.id, s.for_other, s.lat, s.lng, s.accuracy_m, s.loc_source,
 	       s.checkpoint_id, c.name, s.message, s.resolved, s.resolve_reason,
-	       s.acked_at::text, ack.display_name, s.server_received_at::text
+	       s.acked_at::text, ack.display_name, s.server_received_at::text, s.group_id
 	  FROM sos_event s
 	  LEFT JOIN checkpoint c ON c.checkpoint_id = s.checkpoint_id
 	  LEFT JOIN wbw_user ack ON ack.user_id = s.acked_by`
@@ -223,7 +225,7 @@ func scanSOSCase(row pgx.Row) (*model.SOSCase, error) {
 	var c model.SOSCase
 	if err := row.Scan(&c.ID, &c.ForOther, &c.Lat, &c.Lng, &c.AccuracyM, &c.LocSource,
 		&c.CheckpointID, &c.CheckpointName, &c.Message, &c.Resolved, &c.ResolveReason,
-		&c.AckedAt, &c.AckedByName, &c.CreatedAt); err != nil {
+		&c.AckedAt, &c.AckedByName, &c.CreatedAt, &c.GroupID); err != nil {
 		return nil, err
 	}
 	return &c, nil
@@ -437,7 +439,7 @@ func (r *WBWSOSRepository) StaffFeed(ctx context.Context, staffID, role, since s
 		var c model.SOSStaffCase
 		if err := rows.Scan(&c.ID, &c.ForOther, &c.Lat, &c.Lng, &c.AccuracyM, &c.LocSource,
 			&c.CheckpointID, &c.CheckpointName, &c.Message, &c.Resolved, &c.ResolveReason,
-			&c.AckedAt, &c.AckedByName, &c.CreatedAt, &c.UpdatedAt,
+			&c.AckedAt, &c.AckedByName, &c.CreatedAt, &c.GroupID, &c.UpdatedAt,
 			&c.ParticipantID, &c.FirstName, &c.LastName, &c.Bib, &c.GroupNumber,
 			&c.ContactPhone, &c.EmergencyName, &c.EmergencyPh,
 			&c.BloodType, &c.HealthNotes); err != nil {
@@ -448,6 +450,21 @@ func (r *WBWSOSRepository) StaffFeed(ctx context.Context, staffID, role, since s
 	return list, rows.Err()
 }
 
+// sosUpdatedAtExpr — updated_at ในรูปแบบที่ "เดินทางกลับมาได้" ไม่ใช่ ::text ดิบ
+//
+// ค่านี้ไม่ใช่แค่ข้อมูลให้อ่าน มันคือ cursor: ฝั่งแอปประกอบเป็น "<updated_at>|<id>" แล้วส่งกลับมา
+// เป็น query parameter ทุกรอบที่ poll · ::text ดิบให้ "2026-08-06 16:56:44.807668+00" ซึ่งมีทั้ง
+// ช่องว่างและ + สองตัวที่ query string ตีความใหม่ระหว่างทาง — + ถูกถอดเป็นช่องว่างโดยกติกาของ
+// application/x-www-form-urlencoded ที่ r.URL.Query() ใช้ Postgres จึงได้ "...807668 00" กลับมาแล้ว
+// ปฏิเสธทั้ง query (invalid input syntax for type timestamp with time zone)
+//
+// **จงใจแก้ที่ฝั่งที่ "ผลิต" ค่า ไม่ใช่ที่ฝั่งที่ escape** — การไปแก้ให้ iOS escape + ให้ถูกต้อง
+// ก็ปิดอาการได้เหมือนกัน แต่ปล่อยกับดักช่องว่าง/+ ไว้ให้ผู้เรียกคนถัดไป (curl, แดชบอร์ด, integration
+// test) เหยียบซ้ำ · RFC3339 แบบ UTC ไม่มีอักขระที่ต้อง escape เลยแม้แต่ตัวเดียว และยังเรียงลำดับ
+// ตามพจนานุกรมได้ถูกต้องเพราะทุกฟิลด์กว้างคงที่ (ฝั่ง iOS เรียง cases ด้วยการเทียบ string ตรงๆ)
+// ตัว parser ฝั่งรับไม่ต้องแก้อะไร — ::timestamptz อ่านรูปแบบนี้ได้อยู่แล้ว
+const sosUpdatedAtExpr = `s.updated_at::text`
+
 // sosStaffSelect — ข้อมูลสุขภาพผูกเงื่อนไขไว้ใน SQL ไม่ใช่ในโค้ด Go
 //
 // สามข้อต้องจริงพร้อมกัน: ยินยอมให้ใช้ข้อมูลสุขภาพ · เคสยังเปิดอยู่ · เป็นตัวคนกดเอง
@@ -455,7 +472,8 @@ func (r *WBWSOSRepository) StaffFeed(ctx context.Context, staffID, role, since s
 const sosStaffSelect = `
 	SELECT s.id, s.for_other, s.lat, s.lng, s.accuracy_m, s.loc_source,
 	       s.checkpoint_id, c.name, s.message, s.resolved, s.resolve_reason,
-	       s.acked_at::text, ack.display_name, s.server_received_at::text, s.updated_at::text,
+	       s.acked_at::text, ack.display_name, s.server_received_at::text, s.group_id,
+	       ` + sosUpdatedAtExpr + `,
 	       s.participant_id::text, COALESCE(p.first_name,''), COALESCE(p.last_name,''),
 	       p.bib_number, g.group_number,
 	       p.contact_phone, p.emergency_contact_name, p.emergency_contact_phone,
