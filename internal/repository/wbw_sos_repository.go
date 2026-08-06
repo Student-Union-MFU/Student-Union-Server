@@ -463,7 +463,7 @@ func (r *WBWSOSRepository) StaffFeed(ctx context.Context, staffID, role, since s
 // test) เหยียบซ้ำ · RFC3339 แบบ UTC ไม่มีอักขระที่ต้อง escape เลยแม้แต่ตัวเดียว และยังเรียงลำดับ
 // ตามพจนานุกรมได้ถูกต้องเพราะทุกฟิลด์กว้างคงที่ (ฝั่ง iOS เรียง cases ด้วยการเทียบ string ตรงๆ)
 // ตัว parser ฝั่งรับไม่ต้องแก้อะไร — ::timestamptz อ่านรูปแบบนี้ได้อยู่แล้ว
-const sosUpdatedAtExpr = `s.updated_at::text`
+const sosUpdatedAtExpr = `to_char(s.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
 
 // sosStaffSelect — ข้อมูลสุขภาพผูกเงื่อนไขไว้ใน SQL ไม่ใช่ในโค้ด Go
 //
