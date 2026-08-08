@@ -73,15 +73,28 @@ func (s *WBWChatService) Sync(ctx context.Context, userID string, groupID int, a
 		return nil, err
 	}
 
+	// ติดผู้รอ "ก่อน" query แรกเสมอเมื่อจะ long-poll — ไม่ใช่หลังจากรู้ว่า query ว่าง
+	//
+	// NOTIFY ที่มาถึงระหว่าง round-trip ของ query แรกจะตกใส่ buffer ของผู้รอไว้ แล้ว Wait() คืนทันที
+	// ลงทะเบียนทีหลังแบบเดิมทำให้สัญญาณช่วงนั้นหายเงียบ ต้องค้างจนครบ 25 วิทั้งที่มีข้อความใหม่แล้ว
+	// (ไม่เสียข้อมูล — query รอบ timeout เจอเองอยู่ดี แต่ช้าไปได้ถึง 25 วิ) · กลุ่มที่คุยกันอยู่จะถูกกลบด้วย
+	// เหตุการณ์ถัดไปที่ปลุกให้เอง อาการจึงโผล่ชัดเฉพาะกลุ่มที่เงียบจริงๆ
+	//
+	// exceptActor = ตัวเอง: การกระทำของเราเองไม่ต้องปลุก long-poll ของเราเอง
+	var watch *ChatWatch
+	if waitSeconds > 0 {
+		watch = s.events.Watch(groupID, userID)
+		defer watch.Release()
+	}
+
 	messages, err := s.repo.MessagesAfter(ctx, groupID, afterID, sinceID, syncLimit)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(messages) == 0 && waitSeconds > 0 {
+	if len(messages) == 0 && watch != nil {
 		// ค้างไว้จนมีเหตุการณ์ของกลุ่มนี้ หรือหมดเวลา หรือ client หลุด
-		// exceptActor = ตัวเอง: การกระทำของเราเองไม่ต้องปลุก long-poll ของเราเอง
-		if s.events.WaitForGroup(ctx, groupID, time.Duration(waitSeconds)*time.Second, userID) {
+		if watch.Wait(ctx, time.Duration(waitSeconds)*time.Second) {
 			messages, err = s.repo.MessagesAfter(ctx, groupID, afterID, sinceID, syncLimit)
 			if err != nil {
 				return nil, err
@@ -119,11 +132,19 @@ func (s *WBWChatService) MarkRead(ctx context.Context, userID string, groupID in
 	if err := s.guard(ctx, userID, groupID); err != nil {
 		return err
 	}
-	if err := s.repo.MarkRead(ctx, userID, groupID, *req.LastReadID); err != nil {
+	advanced, err := s.repo.MarkRead(ctx, userID, groupID, *req.LastReadID)
+	if err != nil {
 		return err
 	}
 	// ปลุกคนอื่นให้เห็นสถานะ "อ่านแล้ว" สดทันที · ข้ามตัวเอง
-	s.events.NotifyGroup(ctx, groupID, userID)
+	//
+	// เฉพาะตอน cursor ขยับจริง — heartbeat ที่แค่ refresh read_at ไม่มีอะไรใหม่ให้สมาชิกคนอื่นเห็น
+	// ปลุกทุกครั้งแบบเดิมคือ ~(G/10)×(G-1) ครั้ง/วิ/กลุ่ม (แอปยิง heartbeat ทุก 10 วิต่อคน) เทียบกับ
+	// ที่ควรเป็น ~G/25 · ที่กลุ่ม 50 คนพร้อมกันคือ ~245 เทียบ ~2 = ขยายผลราว 125 เท่า กินคิว query
+	// ของ pool จนคำขออื่นอดตามไปด้วย
+	if advanced {
+		s.events.NotifyGroup(ctx, groupID, userID)
+	}
 	return nil
 }
 
