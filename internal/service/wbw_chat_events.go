@@ -129,14 +129,22 @@ func (e *ChatEvents) dispatch(groupID int, actor string) {
 	}
 }
 
-// WaitForGroup ค้างไว้จนมีเหตุการณ์ของกลุ่มนี้ หรือหมดเวลา หรือ client หลุด
-// คืน true เมื่อถูกปลุกจริง · false เมื่อหมดเวลา/ยกเลิก
+// ChatWatch — ผู้รอที่ลงทะเบียนไว้แล้ว แต่ยังไม่เริ่มบล็อก
+//
+// แยก "ลงทะเบียน" ออกจาก "รอ" เพื่อให้ผู้เรียกติดผู้รอได้ก่อน query แรก · NOTIFY ที่มาถึงระหว่าง
+// round-trip ของ query นั้นจะตกใส่ ch (buffer 1) แล้ว Wait() คืน true ทันทีโดยไม่ต้องรอจริง
+// ถ้าลงทะเบียนหลัง query เหมือนเดิม สัญญาณช่วงนั้นหายเงียบ ต้องค้างจนครบ timeout ทั้งที่มีของใหม่แล้ว
+type ChatWatch struct {
+	events   *ChatEvents
+	groupID  int
+	waiter   *chatWaiter
+	released sync.Once
+}
+
+// Watch ลงทะเบียนผู้รอทันที · ต้องเรียก Release() เสมอ (defer) ไม่งั้น waiter ค้างใน map ตลอดอายุ process
 //
 // exceptActor คือ user id ของคนที่รออยู่ — เขาจะไม่ถูกปลุกจากการกระทำของตัวเอง
-func (e *ChatEvents) WaitForGroup(ctx context.Context, groupID int, timeout time.Duration, exceptActor string) bool {
-	if timeout <= 0 {
-		return false
-	}
+func (e *ChatEvents) Watch(groupID int, exceptActor string) *ChatWatch {
 	w := &chatWaiter{ch: make(chan struct{}, 1), except: exceptActor}
 
 	e.mu.Lock()
@@ -146,21 +154,34 @@ func (e *ChatEvents) WaitForGroup(ctx context.Context, groupID int, timeout time
 	e.waiters[groupID][w] = struct{}{}
 	e.mu.Unlock()
 
-	defer func() {
+	return &ChatWatch{events: e, groupID: groupID, waiter: w}
+}
+
+// Release ถอนตัวออกจากรายชื่อผู้รอ · เรียกซ้ำได้ (sync.Once) เพื่อให้ defer ปลอดภัยเสมอ
+func (c *ChatWatch) Release() {
+	c.released.Do(func() {
+		e := c.events
 		e.mu.Lock()
-		delete(e.waiters[groupID], w)
+		delete(e.waiters[c.groupID], c.waiter)
 		// เก็บกวาด map ของกลุ่มที่ไม่มีคนรอแล้ว ไม่งั้น map โตตามจำนวนกลุ่มที่เคยมีคนรอ
-		if len(e.waiters[groupID]) == 0 {
-			delete(e.waiters, groupID)
+		if len(e.waiters[c.groupID]) == 0 {
+			delete(e.waiters, c.groupID)
 		}
 		e.mu.Unlock()
-	}()
+	})
+}
 
+// Wait ค้างไว้จนมีเหตุการณ์ของกลุ่มนี้ หรือหมดเวลา หรือ client หลุด
+// คืน true เมื่อถูกปลุกจริง · false เมื่อหมดเวลา/ยกเลิก
+func (c *ChatWatch) Wait(ctx context.Context, timeout time.Duration) bool {
+	if timeout <= 0 {
+		return false
+	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	select {
-	case <-w.ch:
+	case <-c.waiter.ch:
 		return true
 	case <-timer.C:
 		return false

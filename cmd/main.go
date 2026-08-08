@@ -142,8 +142,14 @@ func main() {
 	wbwStaffService := service.NewWBWStaffService(wbwStaffRepo, wbwNotiService, wbwPushService)
 	wbwStaffHandler := handler.NewWBWStaffHandler(wbwStaffService)
 
-	// ความคืบหน้าเช็คอินของตัวเอง — ใช้ repo เดิมที่ wbwAdminService ใช้อยู่แล้ว
-	wbwProgressService := service.NewWBWProgressService(wbwCheckpointRepo)
+	// เบอร์กลางงาน — อ่านครั้งเดียวที่นี่แล้วส่งต่อให้ทั้ง progress (ด้านล่าง) และ SOS
+	// (ถัดไป) ไม่ใช่ os.Getenv ซ้ำที่จุดสร้างแต่ละอัน · ว่างได้ตอน dev แอปมีเบอร์ default
+	// ของตัวเองอยู่แล้ว
+	emergencyPhone := os.Getenv("WBW_EMERGENCY_PHONE")
+
+	// ความคืบหน้าเช็คอินของตัวเอง — ใช้ repo เดิมที่ wbwAdminService ใช้อยู่แล้ว · แนบเบอร์
+	// กลางไปด้วยเพราะ /me/progress ถูก poll ทุก 60 วิ เป็นจุดที่แอป cache เบอร์ไว้ก่อนเกิดเหตุ
+	wbwProgressService := service.NewWBWProgressService(wbwCheckpointRepo, emergencyPhone)
 	wbwProgressHandler := handler.NewWBWProgressHandler(wbwProgressService)
 
 	wbwFeedbackRepo := repository.NewWBWFeedbackRepository(pool)
@@ -152,6 +158,15 @@ func main() {
 
 	wbwDeviceService := service.NewWBWDeviceService(wbwDeviceRepo)
 	wbwDeviceHandler := handler.NewWBWDeviceHandler(wbwDeviceService)
+
+	// SOS ฉุกเฉิน — ช่อง LISTEN/NOTIFY แยกจากแชท (ดูคอมเมนต์ที่ sosChannel) ต้อง Start
+	// listener เองเหมือน chatEvents ข้างบน · emergencyPhone อ่านไว้ครั้งเดียวข้างบนแล้ว
+	// (ตัวเดียวกับที่ progress service ใช้)
+	sosRepo := repository.NewWBWSOSRepository(pool)
+	sosEvents := service.NewSOSEvents(pool, config.ConnectListener)
+	sosEvents.Start(context.Background())
+	wbwSOSHandler := handler.NewWBWSOSHandler(
+		service.NewWBWSOSService(sosRepo, sosEvents, wbwPushService, wbwNotiService, emergencyPhone))
 
 	// ต้องผ่าน RequireAuth ก่อนเสมอ แล้วจึงเช็ค role
 	requireAuth := appmw.RequireAuth(wbwTokens)
@@ -331,6 +346,12 @@ func main() {
 		// ความเห็นต่อฐาน — ผู้เข้าร่วมส่งของตัวเอง
 		r.With(requireAuth).Post("/me/feedback", wbwFeedbackHandler.Submit)
 
+		// SOS ฉุกเฉิน — กดได้จากทุกหน้า ไม่ผูกกับฐานไหน
+		r.With(requireAuth).Post("/me/sos", wbwSOSHandler.Raise)
+		r.With(requireAuth).Get("/me/sos/active", wbwSOSHandler.Active)
+		r.With(requireAuth).Get("/me/sos/{id}", wbwSOSHandler.Get)
+		r.With(requireAuth).Post("/me/sos/{id}/cancel", wbwSOSHandler.Cancel)
+
 		r.Route("/groups", func(r chi.Router) {
 			r.Use(requireAuth)
 			r.Get("/", wbwAdminHandler.ListGroups)
@@ -364,6 +385,11 @@ func main() {
 			r.Use(requireAuth, requireStaff)
 			r.Get("/checkpoints", wbwStaffHandler.Checkpoints)
 			r.Post("/checkin", wbwStaffHandler.Checkin)
+
+			// SOS ฉุกเฉิน — ฝั่งเจ้าหน้าที่
+			r.Get("/sos", wbwSOSHandler.StaffFeed)
+			r.Post("/sos/{id}/ack", wbwSOSHandler.Ack)
+			r.Post("/sos/{id}/resolve", wbwSOSHandler.Resolve)
 		})
 
 		r.Route("/notifications", func(r chi.Router) {

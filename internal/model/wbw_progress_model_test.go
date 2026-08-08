@@ -113,3 +113,31 @@ func TestProgressItemCarriesAnswerWhenAnswered(t *testing.T) {
 		}
 	}
 }
+
+// emergency_phone ต้องอยู่ใน JSON เสมอ (ดูคอมเมนต์ EmergencyPhone บน CheckinProgress) — /me/progress
+// ถูก poll ทุก 60 วิระหว่างเปิดแอป ปุ่มโทรสำรองฝั่ง iOS จึงมีเบอร์แคชไว้ก่อนเกิดเหตุ พิมพ์ struct tag
+// ผิดตรงนี้จะทำให้แอปเห็นคีย์หายไปเฉยๆ ไม่มี compiler ฝั่งไหนจับให้
+func TestCheckinProgressCarriesTheEmergencyPhoneKey(t *testing.T) {
+	p := CheckinProgress{Total: 8, CheckedIn: []CheckinProgressItem{}, EmergencyPhone: "053-916-000"}
+
+	encoded, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"emergency_phone":"053-916-000"`) {
+		t.Errorf("expected \"emergency_phone\":\"053-916-000\", got %s", encoded)
+	}
+}
+
+// ว่าง = dev ไม่ได้ตั้งเบอร์กลาง เป็นค่าที่ใช้ได้ปกติ — คีย์ต้องยังอยู่พร้อมค่าว่าง ไม่ใช่คีย์หายไป
+func TestCheckinProgressEmergencyPhoneCanMarshalEmpty(t *testing.T) {
+	p := CheckinProgress{Total: 8, CheckedIn: []CheckinProgressItem{}}
+
+	encoded, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"emergency_phone":""`) {
+		t.Errorf("expected \"emergency_phone\":\"\", got %s", encoded)
+	}
+}

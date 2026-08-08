@@ -131,15 +131,35 @@ func (r *WBWChatRepository) MemberCount(ctx context.Context, groupID int) (int, 
 // ตอน INSERT ใหม่ตั้ง since_id = 0 ไม่ใช่ค่าที่โพสต์มา: /chat/read มีหน้าที่ขยับ cursor
 // อ่านแล้วอย่างเดียว การตัดขอบเขตประวัติเป็นหน้าที่ของ /join · ถ้าตั้งเป็น lastReadID
 // จะตัดประวัติที่คนนี้มีสิทธิ์เห็นอยู่แล้วทิ้งไปโดยไม่ตั้งใจ
-func (r *WBWChatRepository) MarkRead(ctx context.Context, userID string, groupID int, lastReadID int64) error {
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO group_chat_state (user_id, group_id, since_id, last_read_id, read_at)
-		VALUES ($1, $2, 0, $3::bigint, now())
-		ON CONFLICT (user_id, group_id) DO UPDATE
-		   SET last_read_id = GREATEST(group_chat_state.last_read_id, EXCLUDED.last_read_id),
-		       read_at = now()`,
-		userID, groupID, lastReadID)
-	return err
+//
+// คืน advanced = cursor ขยับจริงไหม · ต้องแยก heartbeat (แอปยิงซ้ำค่าเดิมทุก 10 วิตอนเปิดจอแชท)
+// ออกจากการอ่านจริง ไม่งั้นทุก /chat/read ปลุก long-poll ของสมาชิกคนอื่นทั้งกลุ่มโดยไม่มีอะไรใหม่ให้เห็น
+//
+// อ่านค่าเดิมกับอัปเดตต้องอยู่ในสเตทเมนต์เดียว (ไม่ใช่ SELECT แยกก่อน UPDATE) กัน race ระหว่างสอง
+// /chat/read ที่คาบเกี่ยวกันอ่านค่าเดิมผิดจังหวะ · CTE "prev" ไม่ได้ reference "upsert" (data-modifying)
+// ทั้งคู่จึงเห็น snapshot เดียวกันของสเตทเมนต์ (ก่อนอัปเดต) ตามสเปก Postgres สำหรับ data-modifying
+// CTE ที่เป็น sibling กัน — ฝั่ง Node ใช้ SQL ชุดเดียวกันนี้และทดสอบกับ Postgres จริงมาแล้ว
+func (r *WBWChatRepository) MarkRead(ctx context.Context, userID string, groupID int, lastReadID int64) (bool, error) {
+	var current, previous int64
+	err := r.db.QueryRow(ctx, `
+		WITH prev AS (
+			SELECT last_read_id FROM group_chat_state WHERE user_id = $1 AND group_id = $2
+		), upsert AS (
+			INSERT INTO group_chat_state (user_id, group_id, since_id, last_read_id, read_at)
+			VALUES ($1, $2, 0, $3::bigint, now())
+			ON CONFLICT (user_id, group_id) DO UPDATE
+			   SET last_read_id = GREATEST(group_chat_state.last_read_id, EXCLUDED.last_read_id),
+			       read_at = now()
+			RETURNING last_read_id
+		)
+		SELECT upsert.last_read_id, COALESCE(prev.last_read_id, 0)
+		  FROM upsert LEFT JOIN prev ON true`,
+		userID, groupID, lastReadID,
+	).Scan(&current, &previous)
+	if err != nil {
+		return false, err
+	}
+	return current > previous, nil
 }
 
 // InsertMessage — idempotent ด้วย client_id เพื่อให้ retry ตอนเน็ตแย่ได้ข้อความเดิม

@@ -91,6 +91,9 @@ type fcmAps struct {
 	Sound    string `json:"sound,omitempty"`
 	Badge    *int   `json:"badge,omitempty"`
 	ThreadID string `json:"thread-id,omitempty"`
+	// InterruptionLevel — เฉพาะ sendTokens/SOS ใช้ (ดูคอมเมนต์ที่ SendToTokens) ตัวอื่น
+	// ไม่ตั้งค่านี้ omitempty จึงทำให้หายไปจาก payload เหมือนเดิมสำหรับแชท/push รายคน
+	InterruptionLevel string `json:"interruption-level,omitempty"`
 }
 
 type fcmAPNS struct {
@@ -300,6 +303,90 @@ func (s *WBWPushService) sendUser(ctx context.Context, userID, title, body strin
 			if dead {
 				mu.Lock()
 				invalid = append(invalid, t.Token)
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+
+	if len(invalid) > 0 {
+		slog.Info("เก็บกวาด device token ที่ใช้ไม่ได้", "count", len(invalid))
+		return s.repo.DeleteTokens(ctx, invalid)
+	}
+	return nil
+}
+
+// SendToTokens — ยิง push ไปยัง token ที่ผู้เรียกหามาเองแล้ว
+//
+// ต่างจาก SendChatPush/SendUserPush ตรงที่ปลายทางไม่ได้มาจาก query ตายตัวหนึ่งอัน
+// — SOS มีสามกลุ่มผู้รับที่คิดคนละแบบ (ฐาน/ทีมกลาง/กลุ่มเพื่อน) การรวมเข้ามาเป็น
+// query เดียวจะทำให้ทั้งสามกลุ่มถูกบังคับให้ได้ข้อความเดียวกัน ซึ่งผิดตั้งแต่ต้น
+//
+// interruption-level: time-sensitive ทะลุ Focus ได้โดยไม่ต้องขอ entitlement
+// critical alert จาก Apple (ซึ่งรออนุมัติไม่ทันงาน)
+func (s *WBWPushService) SendToTokens(ctx context.Context, tokens []string, title, body string, data map[string]string) {
+	if s.tokens == nil || len(tokens) == 0 {
+		return
+	}
+	detached := context.WithoutCancel(ctx)
+	goSafe("SendToTokens", func() {
+		c, cancel := context.WithTimeout(detached, pushTimeout)
+		defer cancel()
+		if err := s.sendTokens(c, tokens, title, body, data); err != nil {
+			slog.Error("ส่ง push ตามรายชื่อ token ไม่สำเร็จ", "err", err)
+		}
+	})
+}
+
+// sendTokens เหมือน sendUser ทุกขั้นตอน (ขอ token ครั้งเดียว ยิงแต่ละเครื่องพร้อมกัน
+// เก็บกวาด token ตายผ่าน sendOne ตัวเดียวกัน) ต่างแค่ปลายทางเป็น token ที่ผู้เรียก
+// ส่งมาตรงๆ แทนที่จะเดินทาง repo.XxxPushTargets จึงไม่มี badge ต่อเครื่องให้ผูก
+// (SOS ไม่ใช่ตัวนับข้อความที่ยังไม่อ่าน) และ apns-push-type/interruption-level
+// เป็นสองจุดที่ต่างจาก sendUser โดยตั้งใจ — ดูคอมเมนต์ที่ SendToTokens
+func (s *WBWPushService) sendTokens(ctx context.Context, tokens []string, title, body string, data map[string]string) error {
+	// ขอ access token ครั้งเดียวใช้ทั้งรอบ · TokenSource cache ให้อยู่แล้ว
+	// ไม่ต้องขอใหม่ทุกเครื่อง
+	tok, err := s.tokens.Token()
+	if err != nil {
+		return fmt.Errorf("ขอ access token ไม่ได้: %w", err)
+	}
+
+	var (
+		mu      sync.Mutex
+		invalid []string
+		wg      sync.WaitGroup
+	)
+	sem := make(chan struct{}, pushConcurrency)
+
+	// goSafe ด้วยเหตุผลเดียวกับใน sendChat/sendUser (ดูคอมเมนต์ที่ sendChat)
+	for _, t := range tokens {
+		wg.Add(1)
+		goSafe("sendTokens.target", func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			req := fcmRequest{Message: fcmMessage{
+				Token:        t,
+				Notification: &fcmNotification{Title: title, Body: body},
+				Data:         data,
+				APNS: &fcmAPNS{Headers: map[string]string{
+					"apns-priority": "10",
+					// alert (ไม่ใช่ background) + time-sensitive คือคู่ที่ทำให้ทะลุ Focus/
+					// Do Not Disturb ได้จริงโดยไม่ต้องมี Critical Alerts entitlement
+					"apns-push-type": "alert",
+				}},
+			}}
+			req.Message.APNS.Payload.Aps = fcmAps{Sound: "default", InterruptionLevel: "time-sensitive"}
+
+			dead, err := s.sendOne(ctx, tok, req)
+			if err != nil {
+				slog.Warn("push หนึ่งเครื่องล้มเหลว", "err", err)
+				return
+			}
+			if dead {
+				mu.Lock()
+				invalid = append(invalid, t)
 				mu.Unlock()
 			}
 		})

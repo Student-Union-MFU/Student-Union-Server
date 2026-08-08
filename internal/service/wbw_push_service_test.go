@@ -116,6 +116,39 @@ func TestSendChatPayloadShape(t *testing.T) {
 	}
 }
 
+// payload ที่ SOS ต้องได้ต่างจาก sendUser สองจุด: apns-push-type: alert กับ
+// interruption-level: time-sensitive — สองอันนี้คือสิ่งที่ทำให้ทะลุ Focus/Do Not
+// Disturb ได้โดยไม่ต้องขอ Critical Alerts entitlement จาก Apple (รออนุมัติไม่ทันงาน)
+// ถ้าฟิลด์ไหนหายไป การแจ้งเตือน SOS จะเงียบเหมือน push ทั่วไปตอนเปิด Focus อยู่
+func TestSendTokensPayloadShape(t *testing.T) {
+	var got fcmRequest
+	s, _ := testPushService(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		io.WriteString(w, `{"name":"ok"}`)
+	})
+
+	err := s.sendTokens(context.Background(), []string{"tok-sos-1"},
+		"ขอความช่วยเหลือฉุกเฉิน", "ใกล้จุดพยาบาล", map[string]string{"type": "sos", "sos_id": "7"})
+	if err != nil {
+		t.Fatalf("sendTokens: %v", err)
+	}
+
+	if got.Message.Token != "tok-sos-1" {
+		t.Errorf("token = %q", got.Message.Token)
+	}
+	if got.Message.Data["type"] != "sos" {
+		t.Errorf(`data.type = %q, ต้องเป็น "sos"`, got.Message.Data["type"])
+	}
+	if got.Message.APNS.Headers["apns-push-type"] != "alert" {
+		t.Errorf("apns-push-type = %q, ต้องเป็น %q ไม่งั้นแอปจับต้นทางแจ้งเตือนไม่ได้",
+			got.Message.APNS.Headers["apns-push-type"], "alert")
+	}
+	if got.Message.APNS.Payload.Aps.InterruptionLevel != "time-sensitive" {
+		t.Errorf("interruption-level = %q, ต้องเป็น %q ไม่งั้น SOS ทะลุ Focus ไม่ได้",
+			got.Message.APNS.Payload.Aps.InterruptionLevel, "time-sensitive")
+	}
+}
+
 // badge 0 ต้องส่งไปจริง ไม่ใช่หายไปเพราะ omitempty — ศูนย์แปลว่า "ล้าง badge"
 // ซึ่งเป็นค่าที่มีความหมาย ถ้าหายไป badge ค้างเลขเดิมบน icon
 func TestBadgeZeroIsSent(t *testing.T) {
