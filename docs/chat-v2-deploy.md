@@ -28,22 +28,43 @@ wbw.sumfu.store          ->  Cloudflare  ->  Express                            
   ฝั่ง server ถ้ามีใครเติม `WriteTimeout` ทีหลัง ต้องให้เกิน 25 วิ ไม่งั้น long-poll
   จะถูกตัดทุกครั้งที่ไม่มีข้อความเข้า
 
-**ยังไม่ได้ทดสอบผ่านเส้นทางสาธารณะจริง** เพราะตอนวัด production ยังรันโค้ดเก่าที่ไม่มี
-endpoint นี้ (ตอบ 404) ทดสอบทันทีหลัง deploy:
+**วัดผ่านเส้นทางสาธารณะจริงแล้วเมื่อ 2026-08-09** (ก่อนหน้านี้วัดไม่ได้ เพราะ production ยังรัน
+โค้ดเก่าที่ไม่มี endpoint นี้ ตอบ 404)
+
+| | status | เวลาที่ใช้ |
+|---|---|---|
+| `wait=20` | 200 | **20.237 วิ** |
+| `wait=2` | 200 | **2.229 วิ** |
+
+overhead ~0.23 วิเท่ากันทั้งสองรอบ = round-trip ปกติ · ต้องวัดทั้งสองค่า ไม่ใช่ค่าเดียว เพราะ
+`wait=2` ที่ค้าง 2 วิเป๊ะคือสิ่งที่พิสูจน์ว่าค่านี้เดินทางถึง handler จริง ไม่ได้โดน strip กลางทาง
+(ถ้าโดน strip ทั้งสองรอบจะใช้เวลาเท่ากัน)
+
+รันซ้ำได้ด้วยชุดคำสั่งนี้ — บัญชีที่ใช้ **ต้องอยู่ในกลุ่มแล้ว** (ไม่ใช่สมาชิก = 403) และต้องส่ง `after`
+เป็น id ล่าสุด ไม่งั้น query แรกเจอข้อความค้างอยู่แล้วตอบทันที ซึ่งถูกต้องแต่ไม่ได้วัด long-poll:
 
 ```bash
-TOKEN=$(curl -s -X POST https://api.studentunion.social/wbw/auth/login \
-  -H 'content-type: application/json' \
-  -d '{"username":"<user>","password":"<pass>"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+B=https://api.studentunion.social/wbw
+read -p "username: " U && read -s -p "password: " P && echo
+BODY=$(U="$U" P="$P" python3 -c 'import json,os;print(json.dumps({"username":os.environ["U"],"password":os.environ["P"]}))')
+TOKEN=$(curl -s -X POST "$B/auth/login" -H 'content-type: application/json' -d "$BODY" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))')
+unset P BODY
+
+GID=$(curl -s -H "Authorization: Bearer $TOKEN" "$B/me" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("group_id") or 0)')
+AFTER=$(curl -s -H "Authorization: Bearer $TOKEN" "$B/groups/$GID/chat/sync?wait=0" \
+  | python3 -c 'import sys,json;m=json.load(sys.stdin)["messages"];print(m[-1]["id"] if m else 0)')
 
 time curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
-  'https://api.studentunion.social/wbw/groups/1/chat/sync?wait=20'
+  "$B/groups/$GID/chat/sync?wait=20&after=$AFTER"
+time curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
+  "$B/groups/$GID/chat/sync?wait=2&after=$AFTER"
 ```
 
-ต้องได้ **`200` หลังผ่านไปราว 20 วินาที** — ไม่ใช่ตอบกลับทันที และไม่ใช่ 502/504/524
-ตอบทันที = มีอะไรสักอย่างระหว่างทางไม่ยอมให้ค้าง ต้องหาให้เจอก่อนปล่อยผู้ใช้เข้า
+ตอบทันทีทั้งสองรอบ = มีอะไรสักอย่างระหว่างทางไม่ยอมให้ค้าง · 502/504/524 = โดนตัดกลางคัน
 
-ที่ยืนยันแล้วคือฝั่ง Go เอง: สโมคเทสต์เห็น `wait=25` ค้างครบ 25.0 วิแล้วตอบ 200 ว่าง
+ฝั่ง Go เองยืนยันแยกไว้ตั้งแต่แรก: สโมคเทสต์เห็น `wait=25` ค้างครบ 25.0 วิแล้วตอบ 200 ว่าง
 และ `wait=2` ค้าง 2.01 วิ ตรงตามที่ขอ
 
 ## 2. เพดาน file descriptor
@@ -93,13 +114,24 @@ docker exec postgres-db sh -c 'psql -U $POSTGRES_USER -d $POSTGRES_DB -tAc "sele
 
 ## 4. เลข migration — ห้ามเว้นช่อง
 
-deploy รอบนี้พา migration **3 ตัว** ไม่ใช่ตัวเดียว: prod อยู่ที่ version 8 แต่ main มีถึง 10
+deploy รอบแชท v2 พา migration **3 ตัว** ไม่ใช่ตัวเดียว: prod อยู่ที่ version 8 แต่ main มีถึง 10
 อยู่แล้ว บวกของแชทเป็น 11 → รัน 9, 10, 11 รวดเดียว แปลว่า **ฟีเจอร์ booth จะขึ้นพร้อมแชท**
-ถ้าไม่ต้องการแบบนั้นต้องแยกรอบ deploy
+ถ้าไม่ต้องการแบบนั้นต้องแยกรอบ deploy · (2026-08-09: prod ขึ้นถึง **15** แล้ว พา SOS ไปด้วย
+ด้วยเหตุผลเดียวกัน)
+
+เช็คเลขปัจจุบัน — **ห้ามใช้ `docker compose run --rm migrate version`** ที่เคยเขียนไว้ตรงนี้
+มันใช้ไม่ได้มาแต่ต้น: อาร์กิวเมนต์ที่ต่อท้ายไป**แทนที่ `command:` ทั้งก้อน** ซึ่งเป็นที่เก็บ
+`-path` กับ `-database` อยู่ พอ flag หายหมด CLI เลยตอบ
+`failed to parse scheme from source URL: URL cannot be empty` ทั้งที่ DB ปกติดี
 
 ```bash
-docker compose run --rm migrate version    # ก่อน deploy ต้องได้ 8 · หลัง deploy ต้องได้ 11
+set -a && . .env && set +a
+docker exec postgres-db psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+  'select version, dirty from schema_migrations'
 ```
+
+ได้ `15|f` = อยู่ที่ 15 และไม่ dirty · `t` แปลว่า migration พังกลางคัน ต้องเคลียร์ก่อน
+(ดู `make migrate-force`) ไม่งั้นทุกรอบถัดไปจะปฏิเสธ
 
 `migrate` service รันก่อน `backend` เสมอ (`service_completed_successfully`) **ถ้า migrate
 ล้ม backend จะไม่สตาร์ทเลย**
@@ -123,7 +155,15 @@ WARN push ปิดอยู่: ไม่มี GOOGLE_APPLICATION_CREDENTIALS 
 
 ## หมายเหตุ Android
 
-แอป Android ยังใช้ `/groups/:id/messages` แบบเดิม ไม่เคยยิง `/chat/read` → cursor ค้างที่ 0
-→ คนที่ใช้ Android จะ**ไม่ถูกนับใน "อ่านแล้ว N"** จนกว่าจะ mirror ฝั่ง Android ตามทีหลัง
+เดิมแอป Android ชี้ `wbw.sumfu.store` (Node) ไม่ได้แตะ SUS เลย และยังใช้ `/groups/:id/messages`
+แบบเดิม ไม่เคยยิง `/chat/read` → cursor ค้างที่ 0 → คนที่ใช้ Android **ไม่ถูกนับใน "อ่านแล้ว N"**
+และโดน push ทั้งที่เปิดจอแชทค้างอยู่
+
+2026-08-09: Android ย้ายมา SUS แล้ว (`Weerapong-gui/WBW` PR #2) พร้อมย้ายแชทมา v2 ครบ —
+long-poll, read cursor, heartbeat · แปลว่า **โหลดของ Android มากอง SUS ทั้งหมด** ไม่กระจาย
+สองฝั่งเหมือนเดิมอีกแล้ว ตัวเลขในหัวข้อ 2 กับ 3 (file descriptor, connection ของ Postgres)
+ต้องวัดใหม่หลังแอปเวอร์ชันนั้นกระจายครบ
+
+Node (`wbw.sumfu.store`) เลิกใช้ได้เมื่อ APK ตัวใหม่ถึงมือผู้ใช้ครบ
 
 และ Android ชี้ `wbw.sumfu.store` (Node) ไม่ได้แตะ SUS เลย — deploy นี้จึงไม่กระทบ Android
