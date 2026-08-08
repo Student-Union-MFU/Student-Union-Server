@@ -151,7 +151,84 @@ WARN push ปิดอยู่: ไม่มี GOOGLE_APPLICATION_CREDENTIALS 
 ```
 
 อยากเปิดก็วาง service account ไว้แล้วชี้ env นี้ให้ตรง จะได้ `INFO push พร้อมใช้งาน
-(FCM HTTP v1)` แทน · **ยังไม่เคยทดสอบส่ง FCM จริง** เพราะเครื่อง dev ไม่มี service account
+(FCM HTTP v1) project=wbw-doi` แทน
+
+**ทดสอบส่ง FCM จริงแล้วเมื่อ 2026-08-09** — ข้อความจาก `POST /groups/1/messages` เด้งถึง
+เครื่อง iOS จริงภายในไม่กี่วินาที ครบเส้น `su-server → FCM HTTP v1 → APNs → เครื่อง`
+
+service account ต้องมาจาก Firebase project **`wbw-doi`** เท่านั้น — ตัวเดียวกับที่ทั้งสองแอปใช้
+(`android_native/app/google-services.json`, `WBW/GoogleService-Info.plist`) ผิด project =
+FCM ตอบ error ที่ไม่ได้บอกตรงๆ ว่าสาเหตุคืออะไร เช็คก่อนวางไฟล์:
+
+```bash
+python3 -c "import json;print(json.load(open('secrets/firebase-adminsdk.json'))['project_id'])"
+# ต้องได้ wbw-doi
+chmod 600 secrets/firebase-adminsdk.json   # ข้างในเป็น private key
+```
+
+### อ่าน log ยังไง
+
+`sendChat` **ไม่มี log ตอนสำเร็จ** — เงียบ = ผ่าน · ที่จะเห็นมีสามแบบเท่านั้น
+
+| log | หมายถึง |
+|---|---|
+| `push หนึ่งเครื่องล้มเหลว` | ยิงเครื่องนั้นไม่ผ่าน เครื่องอื่นในรอบเดียวกันยังไปต่อ |
+| `เก็บกวาด device token ที่ใช้ไม่ได้` | FCM ตีกลับว่า token ตาย ลบออกจาก `device_token` แล้ว |
+| `ส่ง push แชทไม่สำเร็จ` | พังทั้งรอบ (เช่นขอ access token ไม่ได้) |
+
+ระวังตีความ: เงียบแปลว่า **FCM รับ token ไว้แล้ว** ไม่ได้แปลว่าถึงเครื่อง — APNs ยังดรอปทีหลัง
+ได้จาก APNs key ที่ยังไม่อัปโหลด, entitlement ไม่ตรง, หรือผู้ใช้ปิดแจ้งเตือน ต้องดูที่เครื่องจริง
+
+### ตรวจว่าใครจะได้ push ก่อนยิงจริง
+
+query นี้เลียนแบบ `ChatPushTargets` (ตัดคนส่ง + ตัดคนที่ `read_at` ใหม่กว่า 25 วิ) ใช้ยืนยันว่า
+คนที่กำลังเปิดจอแชทค้างอยู่ถูกตัดออกจริง ก่อนจะไปทดสอบกับเครื่อง
+
+```bash
+set -a && . .env && set +a
+docker exec postgres-db psql -U "$DB_USER" -d "$DB_NAME" -c "
+  SELECT u.username, count(d.token) AS devices,
+         (s.read_at IS NULL OR now()-s.read_at > interval '25 seconds') AS gets_push
+    FROM participant_profile p
+    JOIN wbw_user u ON u.user_id = p.user_id
+    JOIN device_token d ON d.user_id = p.user_id
+    LEFT JOIN group_chat_state s ON s.user_id = p.user_id AND s.group_id = p.group_id
+   WHERE p.group_id = 1 AND u.username <> '<ผู้ส่ง>'
+   GROUP BY u.username, s.read_at;"
+```
+
+2026-08-09: เครื่อง iOS ที่เปิดจอแชทค้างไว้ให้ `gets_push = f` ตามที่ออกแบบ — heartbeat
+(`/chat/read` ทุก 10 วิ) ดัน `read_at` สดจริงในฐานข้อมูล
+
+## 6. heartbeat ต้องไม่ปลุก long-poll ของทั้งกลุ่ม
+
+`/chat/read` ทำสองหน้าที่พร้อมกัน: ขยับ cursor "อ่านถึงไหน" และเป็น heartbeat "กำลังเปิดจอแชทอยู่"
+แอปยิงซ้ำค่าเดิมทุก 10 วิเพื่อหน้าที่หลัง · ถ้า handler ปลุก long-poll ทุกครั้งที่ถูกเรียก heartbeat
+ของทุกคนจะไปเตะทุกคน = `~(G/10)×(G−1)` ครั้ง/วิ/กลุ่ม เทียบกับที่ควรเป็น `~G/25` (ที่ 50 คน
+คือ ~245 เทียบ ~2 ราว 125 เท่า) กินคิว query ของ pool จนคำขออื่นอดตามไปด้วย
+
+`MarkRead` จึงคืน `advanced` มาด้วย และ service ปลุกเฉพาะตอน cursor ขยับจริง
+
+### วิธีวัด — ต้องใช้กลุ่มว่างเท่านั้น
+
+**ห้ามวัดบนกลุ่มที่มีสมาชิกจริง** ลองแล้วอ่านผลไม่ได้: ใครเข้า/ออกกลุ่ม หรือขยับ cursor จริง
+ก็ยิง `NotifyGroup` ปลุกทุกคนตามดีไซน์ แยกไม่ออกว่าคนที่รออยู่ตื่นเพราะอะไร (รอบแรกวัดบนกลุ่ม 1
+ได้ 16.9 วิแทนที่จะเป็น 20 เพราะเหตุนี้)
+
+หากลุ่มว่างด้วย `SELECT group_id FROM participant_group WHERE member_count = 0` แล้วเอาบัญชี
+ทดสอบสองตัวเข้าไป (`student_id` ต้องตรง `^693\d{7}$` และรหัสยาว ≥ 8) · A ค้าง long-poll
+`wait=20` ส่วน B เป็นคนยิง `/chat/read`
+
+**ต้องมีเฟส 0 เป็นตัวคุมเสมอ** ไม่งั้นแยกไม่ออกระหว่าง "แก้ได้ผล" กับ "กลุ่มเงียบบังเอิญ"
+
+| เฟส | B ทำอะไร | ต้องได้ | วัดได้จริง 2026-08-09 |
+|---|---|---|---|
+| 0 | ไม่ทำอะไรเลย | ~20 วิ (หมดเวลา) | **20.237** |
+| 1 | ยิงค่าเดิม 5 ครั้งที่ t=2,5,8,11,14 | ~20 วิ (ไม่ถูกปลุก) | **20.215** |
+| 2 | ยิงค่าที่สูงขึ้นที่ t=3 | ~3 วิ (ถูกปลุก) | **3.235** |
+
+เฟส 2 สำคัญเท่าเฟส 1 — ถ้ามีแต่เฟส 1 แล้วค้างครบ ก็ยังแยกไม่ออกว่าแก้ถูกหรือ `pg_notify`
+พังทั้งเส้น · เฟส 2 พิสูจน์ว่าเส้นทางปลุกยังทำงาน แค่ heartbeat ไม่ผ่านประตูแล้ว
 
 ## หมายเหตุ Android
 
