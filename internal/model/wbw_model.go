@@ -109,6 +109,7 @@ type Participant struct {
 	GroupNumber  *int    `json:"group_number"`
 	CheckedIn    bool    `json:"checked_in"`
 	BloodType    *string `json:"blood_type"`
+	LeaveQuota   int     `json:"leave_quota"`
 }
 
 type ParticipantDetail struct {
@@ -139,6 +140,7 @@ type ParticipantDetail struct {
 	GroupNumber               *int     `json:"group_number"`
 	PhotoURL                  *string  `json:"photo_url"`
 	CheckedIn                 bool     `json:"checked_in"`
+	LeaveQuota                int      `json:"leave_quota"`
 	EmergencyContactName      *string  `json:"emergency_contact_name"`
 	EmergencyContactPhone     *string  `json:"emergency_contact_phone"`
 	BloodType                 *string  `json:"blood_type"`

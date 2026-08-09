@@ -30,7 +30,8 @@ const participantSelect = `
 	       p.school_id, s.name AS school_name, p.major, p.sex::text,
 	       p.group_id, g.group_number,
 	       COALESCE(p.checked_in, FALSE) AS checked_in,
-	       h.blood_type::text
+	       h.blood_type::text,
+	       p.leave_quota
 	  FROM wbw_user u
 	  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 	  LEFT JOIN school            s ON s.school_id = p.school_id
@@ -41,7 +42,7 @@ func scanParticipant(row pgx.Row) (*model.Participant, error) {
 	var p model.Participant
 	err := row.Scan(&p.ID, &p.StudentID, &p.Created, &p.Bib, &p.FirstName, &p.LastName,
 		&p.ContactPhone, &p.SchoolID, &p.SchoolName, &p.Major, &p.Sex,
-		&p.GroupID, &p.GroupNumber, &p.CheckedIn, &p.BloodType)
+		&p.GroupID, &p.GroupNumber, &p.CheckedIn, &p.BloodType, &p.LeaveQuota)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +131,8 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		       -- id/bib ที่ web-next ใช้อยู่ ตั้งใจส่งทั้งสองชื่อ ไม่เปลี่ยนของเดิม
 		       u.user_id::text, u.username, u.role,
 		       p.bib_number, p.qr_token, p.year,
-		       h.food_allergies, h.chronic_disease, h.medications
+		       h.food_allergies, h.chronic_disease, h.medications,
+		       p.leave_quota
 		  FROM wbw_user u
 		  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 		  LEFT JOIN school            s ON s.school_id = p.school_id
@@ -146,7 +148,8 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		&d.ConsentHealthData, &d.ConsentEmergencyTreatment, &d.WaiverAccepted,
 		&d.UserID, &d.Username, &d.Role,
 		&d.BibNumber, &d.QRToken, &d.Year,
-		&d.FoodAllergies, &d.ChronicDisease, &d.Medications)
+		&d.FoodAllergies, &d.ChronicDisease, &d.Medications,
+		&d.LeaveQuota)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
