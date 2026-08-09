@@ -173,6 +173,8 @@ type ParticipantPatch struct {
 	BloodType             *string  `json:"blood_type"`
 	WeightKg              *float64 `json:"weight_kg"`
 	HeightCm              *float64 `json:"height_cm"`
+	// pointer เพื่อแยก "ไม่ได้ส่งมา" ออกจาก "ส่ง 0" — ไม่ส่ง key นี้ต้องไม่สร้างแถวประวัติ quota_adjust
+	LeaveQuota *int `json:"leave_quota"`
 }
 
 // HasHealthFields บอกว่า body มี key ด้านสุขภาพไหม — Express จะแตะ health_details

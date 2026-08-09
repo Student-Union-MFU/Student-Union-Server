@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -211,10 +212,13 @@ func (h *WBWAdminHandler) UpdateParticipant(w http.ResponseWriter, r *http.Reque
 	}
 	id := chi.URLParam(r, "id")
 
-	p, err := h.service.UpdateParticipant(r.Context(), id, patch)
+	aid, aname := actor(r)
+	p, err := h.service.UpdateParticipant(r.Context(), id, patch, aid)
 	switch {
 	case errors.Is(err, service.ErrBadStudentID):
 		middleware.WriteError(w, http.StatusBadRequest, "รหัสนักศึกษาต้อง 10 หลัก ขึ้นต้น 693")
+	case errors.Is(err, service.ErrBadQuota):
+		middleware.WriteError(w, http.StatusBadRequest, "สิทธิ์ออกจากกลุ่มต้องอยู่ระหว่าง 0 ถึง 10")
 	case errors.Is(err, repository.ErrNotFound):
 		middleware.WriteError(w, http.StatusNotFound, "ไม่พบผู้สมัคร")
 	case repository.IsPGCode(err, "23505"):
@@ -225,8 +229,12 @@ func (h *WBWAdminHandler) UpdateParticipant(w http.ResponseWriter, r *http.Reque
 		slog.Error("update participant failed", "err", err)
 		middleware.WriteError(w, http.StatusInternalServerError, "แก้ไขไม่สำเร็จ")
 	default:
-		aid, aname := actor(r)
 		h.service.Log(r.Context(), aid, aname, "แก้ไขผู้เข้าร่วม", derefStr(p.StudentID))
+		// แยก log เป็นแถวของตัวเอง เฉพาะตอนมีการปรับโควตาจริง ไม่งั้นหน้า Logs จะไม่เห็นรายการนี้
+		if patch.LeaveQuota != nil {
+			h.service.Log(r.Context(), aid, aname, "ปรับสิทธิ์ออกกลุ่ม",
+				fmt.Sprintf("%s → %d ครั้ง", derefStr(p.StudentID), *patch.LeaveQuota))
+		}
 		middleware.WriteJSON(w, http.StatusOK, p)
 	}
 }

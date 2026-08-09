@@ -160,7 +160,8 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 }
 
 // UpdateParticipant ใช้ COALESCE — field ที่ไม่ส่งมา (nil) คงค่าเดิม ลบค่าไม่ได้ (ตามของเดิม)
-func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, patch model.ParticipantPatch) (*model.Participant, error) {
+// actorID มาจาก admin ที่เรียก PATCH — ใช้บันทึกแถว quota_adjust ว่าใครเป็นคนปรับให้
+func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, patch model.ParticipantPatch, actorID string) (*model.Participant, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -203,13 +204,27 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 		  emergency_contact_name  = COALESCE($10, emergency_contact_name),
 		  emergency_contact_phone = COALESCE($11, emergency_contact_phone),
 		  checked_in              = COALESCE($12, checked_in),
+		  leave_quota             = COALESCE($13, leave_quota),
 		  updated_at              = now()
 		WHERE user_id = $1`,
 		id, patch.FirstName, patch.LastName, patch.ContactPhone, patch.Major,
 		patch.SchoolID, patch.GroupID, sex, patch.DateOfBirth,
 		patch.EmergencyContactName, patch.EmergencyContactPhone, patch.CheckedIn,
+		patch.LeaveQuota,
 	); err != nil {
 		return nil, err
+	}
+
+	// log เฉพาะตอนที่ค่านี้ถูกส่งมาจริง — PATCH ตัวอื่น (แก้ชื่อ, เช็คอิน) ไม่ควรสร้างแถวประวัติโควตาขึ้นมา
+	// อ่าน group_id สดในทรานแซกชันเดียวกัน เพื่อให้ไทม์ไลน์บอกได้ว่าตอนถูกปรับ เขาอยู่กลุ่มไหน
+	if patch.LeaveQuota != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO group_membership_log (user_id, group_id, action, quota_after, actor_id)
+			SELECT $1, group_id, 'quota_adjust', $2, $3
+			  FROM participant_profile WHERE user_id = $1`,
+			id, *patch.LeaveQuota, actorID); err != nil {
+			return nil, err
+		}
 	}
 
 	// health_details แตะเฉพาะเมื่อ body มี key ด้านสุขภาพ (ตาม Express)
