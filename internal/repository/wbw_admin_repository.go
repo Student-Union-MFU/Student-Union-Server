@@ -31,7 +31,10 @@ const participantSelect = `
 	       p.group_id, g.group_number,
 	       COALESCE(p.checked_in, FALSE) AS checked_in,
 	       h.blood_type::text,
-	       p.leave_quota
+	       -- role='participant' ที่ยังไม่มีแถว participant_profile ทำให้ p.leave_quota เป็น NULL
+	       -- ผ่าน LEFT JOIN นี้ — scan ตรงเข้า int (ไม่ใช่ pointer) จะ error ทั้งคำสั่ง แล้วพังทั้งหน้ารายชื่อ
+	       -- (เหตุผลเดียวกับ COALESCE(p.checked_in, FALSE) บรรทัดบน)
+	       COALESCE(p.leave_quota, 0) AS leave_quota
 	  FROM wbw_user u
 	  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 	  LEFT JOIN school            s ON s.school_id = p.school_id
@@ -132,7 +135,9 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		       u.user_id::text, u.username, u.role,
 		       p.bib_number, p.qr_token, p.year,
 		       h.food_allergies, h.chronic_disease, h.medications,
-		       p.leave_quota
+		       -- เหตุผลเดียวกับ participantSelect ด้านบน — LEFT JOIN นี้ให้ NULL ได้เมื่อไม่มี
+		       -- participant_profile และ d.LeaveQuota เป็น int ธรรมดา ไม่ใช่ pointer
+		       COALESCE(p.leave_quota, 0)
 		  FROM wbw_user u
 		  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 		  LEFT JOIN school            s ON s.school_id = p.school_id
@@ -220,6 +225,17 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 		sex = patch.Sex
 	}
 
+	// ต้องรู้ group_id "ก่อน" UPDATE เมื่อแอดมินอาจย้ายกลุ่ม — เทียบกับค่าใหม่ทีหลังเพื่อรู้ว่า
+	// เปลี่ยนจริงไหม (ส่ง group_id เดิมซ้ำมาไม่ควรถูกนับเป็นการย้าย ไม่ควรเคลียร์แชทหรือเขียน log)
+	var prevGroupID *int
+	if patch.GroupID != nil {
+		if err := tx.QueryRow(ctx,
+			`SELECT group_id FROM participant_profile WHERE user_id = $1`, id,
+		).Scan(&prevGroupID); err != nil {
+			return nil, err
+		}
+	}
+
 	if _, err := tx.Exec(ctx, `
 		UPDATE participant_profile SET
 		  first_name              = COALESCE($2, first_name),
@@ -242,6 +258,31 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 		patch.LeaveQuota,
 	); err != nil {
 		return nil, err
+	}
+
+	// แอดมินย้ายกลุ่มให้ตรง ๆ ไม่ผ่าน Join — ก่อนหน้านี้ผู้เข้าร่วมย้ายกลุ่มได้ทางเดียวคือ Join
+	// เอง ซึ่งเคลียร์ group_chat_state ให้เสมอ (จุดตัดประวัติแชทตั้งใหม่ทุกครั้งที่เข้ากลุ่ม) เส้นทาง
+	// PATCH นี้ข้าม Join ไปเลย ถ้าไม่เคลียร์ตรงนี้ด้วย cursor เก่าจะยังชี้ไปกลุ่มเดิม แล้วคนที่ย้ายมาใหม่
+	// จะอ่านแชทของกลุ่มปลายทางย้อนหลังไปถึงก่อนที่เขาจะย้ายเข้ามาได้ทั้งหมด
+	//
+	// เช็คว่า "เปลี่ยนจริง" ก่อนเสมอ — ส่ง group_id เดิมซ้ำมาไม่ควรไปรีเซ็ตจุดตัดแชทของคนที่ไม่ได้ย้ายไปไหน
+	//
+	// action ใช้ 'join' (ไม่ใช่ 'leave' เพราะเขายังมีกลุ่มอยู่ ไม่ได้ออกไปเฉย ๆ ไม่ใช่ 'quota_adjust'
+	// เพราะการย้ายนี้ไม่แตะโควตาเลย) — เข้ากลุ่มใหม่คือ 'join' เหมือนตอนผู้ใช้ Join เอง และ group_id
+	// ที่บันทึกคือกลุ่มปลายทาง (สมมาตรกับที่ Join บันทึกกลุ่มที่เพิ่งเข้า ไม่ใช่กลุ่มที่จากมา)
+	// quota_after อ่านค่าปัจจุบันสด ๆ เพราะ PATCH เดียวกันอาจส่ง leave_quota มาด้วย
+	if patch.GroupID != nil && (prevGroupID == nil || *prevGroupID != *patch.GroupID) {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM group_chat_state WHERE user_id = $1`, id); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO group_membership_log (user_id, group_id, action, quota_after, actor_id)
+			SELECT $1, group_id, 'join', leave_quota, $2
+			  FROM participant_profile WHERE user_id = $1`,
+			id, actorID); err != nil {
+			return nil, err
+		}
 	}
 
 	// log เฉพาะตอนที่ค่านี้ถูกส่งมาจริง — PATCH ตัวอื่น (แก้ชื่อ, เช็คอิน) ไม่ควรสร้างแถวประวัติโควตาขึ้นมา
