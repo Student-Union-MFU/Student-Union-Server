@@ -17,6 +17,8 @@ var (
 	ErrNoGroup = errors.New("not in a group")
 	// ErrNoQuota — สิทธิ์ออกจากกลุ่มหมดแล้ว (handler แปลงเป็น 409)
 	ErrNoQuota = errors.New("no leave quota")
+	// ErrAlreadyInGroup — ยังอยู่ในกลุ่มอื่น ต้องออกก่อนถึงจะเข้ากลุ่มใหม่ได้ (handler แปลงเป็น 409)
+	ErrAlreadyInGroup = errors.New("already in a group")
 )
 
 type WBWGroupRepository struct {
@@ -75,10 +77,10 @@ func (r *WBWGroupRepository) MembersIndex(ctx context.Context) ([]model.GroupMem
 	return list, rows.Err()
 }
 
-// Join — เข้ากลุ่มแบบ atomic กันที่นั่งเกิน แล้วตั้งจุดตัดประวัติแชทใหม่
+// Join — เข้ากลุ่มแบบ atomic กันที่นั่งเกิน แล้วตั้งจุดตัดประวัติแชทใหม่ + เขียน log ทุกครั้งที่สำเร็จ
 //
-// เข้ากลุ่มเดิมซ้ำก็ตัดประวัติใหม่ทุกครั้ง ตามที่ออกแบบไว้ (อธิบายง่ายและเป็นส่วนตัวที่สุด)
-// คืน ErrNotFound เมื่อไม่มีกลุ่มนี้ · ErrGroupFull เมื่อเต็ม
+// อยู่กลุ่มไหนอยู่แล้วเข้าซ้ำ/ย้ายตรง ๆ ไม่ได้ ต้อง Leave ก่อนเสมอ เพราะโควตาหักตอนออกจากกลุ่มเท่านั้น
+// คืน ErrNotFound เมื่อไม่มีกลุ่มนี้ · ErrGroupFull เมื่อเต็ม · ErrAlreadyInGroup เมื่อมีกลุ่มอยู่แล้ว
 func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID int) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -98,26 +100,30 @@ func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID in
 		return err
 	}
 
-	// อยู่กลุ่มนี้อยู่แล้วไหม — ถ้าใช่ ข้ามการเช็คที่นั่ง เพราะเขานั่งอยู่ในนั้นแล้ว
-	// (ไม่ข้าม = กลุ่มที่เต็มพอดีจะกดเข้าซ้ำเพื่อตัดประวัติไม่ได้เลย)
+	// อยู่กลุ่มไหนอยู่แล้วห้ามย้ายตรง ๆ — ถ้ายอม จะเลี่ยงโควตาได้ทั้งหมดเพราะโควตาหักตอน leave เท่านั้น
+	// (เดิมยอมให้เข้ากลุ่มเดิมซ้ำเพื่อรีเซ็ตจุดตัดประวัติแชท — ความสามารถนั้นหายไป ไม่มี UI ไหนเรียกใช้)
 	var current *int
 	if err := tx.QueryRow(ctx,
-		`SELECT group_id FROM participant_profile WHERE user_id = $1`,
+		`SELECT group_id FROM participant_profile WHERE user_id = $1 FOR UPDATE`,
 		userID).Scan(&current); err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
 		return err
 	}
-	alreadyHere := current != nil && *current == groupID
-	if !alreadyHere && memberCount >= capacity {
+	if current != nil {
+		return ErrAlreadyInGroup
+	}
+	if memberCount >= capacity {
 		return ErrGroupFull
 	}
 
 	// trigger trg_group_count ปรับ member_count ให้ทั้งกลุ่มเก่าและใหม่เอง
-	if _, err := tx.Exec(ctx,
-		`UPDATE participant_profile SET group_id = $1, updated_at = now() WHERE user_id = $2`,
-		groupID, userID); err != nil {
+	var quota int
+	if err := tx.QueryRow(ctx,
+		`UPDATE participant_profile SET group_id = $1, updated_at = now()
+		  WHERE user_id = $2 RETURNING leave_quota`,
+		groupID, userID).Scan(&quota); err != nil {
 		return err
 	}
 
@@ -139,6 +145,13 @@ func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID in
 		       last_read_id = EXCLUDED.since_id,
 		       read_at = now()`,
 		userID, groupID); err != nil {
+		return err
+	}
+
+	// quota_after = ค่าปัจจุบัน (การเข้ากลุ่มไม่หักสิทธิ์) — เก็บไว้เพื่อให้ไทม์ไลน์อ่านแล้วเห็นสถานะ ณ ตอนนั้น
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO group_membership_log (user_id, group_id, action, quota_after)
+		VALUES ($1, $2, 'join', $3)`, userID, groupID, quota); err != nil {
 		return err
 	}
 

@@ -227,3 +227,60 @@ func TestLeaveConcurrentSpendsQuotaOnce(t *testing.T) {
 		t.Errorf("ต้องมี log leave แถวเดียว แต่มี %d", n)
 	}
 }
+
+func TestJoinWhileInGroupIsRejected(t *testing.T) {
+	pool, uid := openGroupTestDB(t)
+	repo := NewWBWGroupRepository(pool)
+	gid := freeGroupID(t, pool)
+	setMembership(t, pool, uid, &gid, 1)
+
+	// เป้าหมายคนละกลุ่มกับที่อยู่ — ถ้าไม่ปิดช่องนี้ จะย้ายกลุ่มได้โดยไม่เสียโควตาเลย
+	var other int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT group_id FROM participant_group
+		  WHERE member_count < capacity AND group_id <> $1 ORDER BY group_id LIMIT 1`, gid,
+	).Scan(&other); err != nil {
+		t.Fatalf("ต้องมีกลุ่มว่างอีกกลุ่มเพื่อทดสอบ (%v)", err)
+	}
+
+	err := repo.Join(context.Background(), uid, other)
+	if !errors.Is(err, ErrAlreadyInGroup) {
+		t.Fatalf("อยากได้ ErrAlreadyInGroup แต่ได้ %v", err)
+	}
+	got, _ := readMembership(t, pool, uid)
+	if got == nil || *got != gid {
+		t.Errorf("ต้องยังอยู่กลุ่มเดิม %d แต่ได้ %v", gid, got)
+	}
+	if n := membershipLogCount(t, pool, uid, "join"); n != 0 {
+		t.Errorf("ห้ามมี log join ตอนถูกปฏิเสธ แต่มี %d แถว", n)
+	}
+}
+
+func TestJoinLogsWithoutSpendingQuota(t *testing.T) {
+	pool, uid := openGroupTestDB(t)
+	repo := NewWBWGroupRepository(pool)
+	setMembership(t, pool, uid, nil, 1)
+	gid := freeGroupID(t, pool)
+
+	if err := repo.Join(context.Background(), uid, gid); err != nil {
+		t.Fatalf("เข้ากลุ่มไม่สำเร็จ (%v)", err)
+	}
+	got, quota := readMembership(t, pool, uid)
+	if got == nil || *got != gid {
+		t.Errorf("ต้องอยู่กลุ่ม %d แต่ได้ %v", gid, got)
+	}
+	if quota != 1 {
+		t.Errorf("การเข้ากลุ่มห้ามหักโควตา — ต้องเหลือ 1 แต่ได้ %d", quota)
+	}
+
+	var loggedGroup, quotaAfter int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT group_id, quota_after FROM group_membership_log
+		  WHERE user_id = $1 AND action = 'join' ORDER BY log_id DESC LIMIT 1`, uid,
+	).Scan(&loggedGroup, &quotaAfter); err != nil {
+		t.Fatalf("ไม่มีแถว log join (%v)", err)
+	}
+	if loggedGroup != gid || quotaAfter != 1 {
+		t.Errorf("log ต้องเป็น (กลุ่ม %d, quota_after 1) แต่ได้ (%d, %d)", gid, loggedGroup, quotaAfter)
+	}
+}
