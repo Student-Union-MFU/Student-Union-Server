@@ -88,20 +88,10 @@ func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID in
 	}
 	defer tx.Rollback(ctx)
 
-	// ล็อกแถวกลุ่มปลายทางก่อน กันสองคนแย่งที่นั่งสุดท้ายพร้อมกัน
-	var capacity, memberCount int
-	err = tx.QueryRow(ctx,
-		`SELECT capacity, member_count FROM participant_group WHERE group_id = $1 FOR UPDATE`,
-		groupID).Scan(&capacity, &memberCount)
-	if err == pgx.ErrNoRows {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-
-	// อยู่กลุ่มไหนอยู่แล้วห้ามย้ายตรง ๆ — ถ้ายอม จะเลี่ยงโควตาได้ทั้งหมดเพราะโควตาหักตอน leave เท่านั้น
-	// (เดิมยอมให้เข้ากลุ่มเดิมซ้ำเพื่อรีเซ็ตจุดตัดประวัติแชท — ความสามารถนั้นหายไป ไม่มี UI ไหนเรียกใช้)
+	// ล็อกแถวผู้ใช้ก่อนแถวกลุ่มเสมอ — Leave ล็อก user แล้วให้ trigger trg_group_count ล็อก
+	// participant_group ต่อในทรานแซกชันเดียวกัน (user → group) ถ้า Join ล็อกสลับข้าง (group → user)
+	// เหมือนเดิม พอ join/leave ของ user คนเดียวกันชนกันพอดี จะเกิด lock cycle ให้ Postgres
+	// ฟ้อง deadlock แล้วโดน rollback เป็น 500 ห้ามสลับกลับ แม้จะดูเหมือนจัดกลุ่ม query ให้เป็นระเบียบกว่า
 	var current *int
 	if err := tx.QueryRow(ctx,
 		`SELECT group_id FROM participant_profile WHERE user_id = $1 FOR UPDATE`,
@@ -113,6 +103,18 @@ func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID in
 	}
 	if current != nil {
 		return ErrAlreadyInGroup
+	}
+
+	// ล็อกแถวกลุ่มปลายทาง กันสองคนแย่งที่นั่งสุดท้ายพร้อมกัน
+	var capacity, memberCount int
+	err = tx.QueryRow(ctx,
+		`SELECT capacity, member_count FROM participant_group WHERE group_id = $1 FOR UPDATE`,
+		groupID).Scan(&capacity, &memberCount)
+	if err == pgx.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
 	}
 	if memberCount >= capacity {
 		return ErrGroupFull
@@ -128,6 +130,8 @@ func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID in
 	}
 
 	// ย้ายกลุ่ม = ทิ้ง state ของกลุ่มเก่า ไม่งั้น cursor เก่าค้างอยู่ในตารางตลอด
+	// (ตอนนี้เป็น no-op เชิงป้องกันเท่านั้น — มาถึงบรรทัดนี้ได้แปลว่า current เป็น nil เสมอ
+	// คือไม่เคยมีกลุ่มเก่า และ Leave ก็ลบแถว group_chat_state ทั้งหมดของ user ไปแล้วตอนออก)
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM group_chat_state WHERE user_id = $1 AND group_id <> $2`,
 		userID, groupID); err != nil {
