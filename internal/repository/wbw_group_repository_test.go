@@ -192,39 +192,56 @@ func TestLeaveWithoutGroupKeepsQuota(t *testing.T) {
 	}
 }
 
+// TestLeaveConcurrentSpendsQuotaOnce เป็นเทสเดียวที่คุ้ม invariant หลักของฟีเจอร์นี้ (หักโควตาซ้ำไม่ได้)
+// ต้องบังคับให้สอง goroutine ชนกันจริง ไม่ใช่แค่ "รันพร้อมกันเฉยๆ" — ปล่อย goroutine เปล่าโดยไม่มี
+// การซิงค์ (ของเดิมที่แก้ตรงนี้) มักจะจบทรานแซกชันแรกก่อนตัวที่สองเริ่มด้วยซ้ำ ตัวที่สองเจอ ErrNoGroup
+// ตามปกติ (ไม่ใช่เพราะกันโควตาซ้ำได้) แล้วทุก assertion ก็ยังผ่านอยู่ดี — เทสแบบนั้นเขียวได้แม้กับ
+// implementation ที่ผิด (SELECT เช็คโควตาก่อนแล้วค่อย UPDATE แยกคำสั่ง ซึ่งมี race window จริง)
+//
+// ใช้ start channel แบบเดียวกับ TestFeedbackSubmitConcurrentSameClientIDNeverConflicts ใน
+// wbw_feedback_repository_test.go — ปล่อยทั้งสอง goroutine พร้อมกันด้วย close(start) เพื่อบีบให้
+// เข้าทรานแซกชันในช่วงเวลาใกล้กันที่สุดเท่าที่ Go scheduler จะให้ได้ แล้ววนซ้ำ ~20 รอบพร้อมรีเซ็ต
+// สถานะทุกรอบ เพราะแม้แต่แบบมี start channel ก็ยังมีโอกาสเล็กๆ ที่รอบเดียวจะไม่ชนกันพอดี
+// รอบเดียวไม่มีทางแบกความมั่นใจของทั้งเทสได้
 func TestLeaveConcurrentSpendsQuotaOnce(t *testing.T) {
 	pool, uid := openGroupTestDB(t)
 	repo := NewWBWGroupRepository(pool)
 	gid := freeGroupID(t, pool)
-	setMembership(t, pool, uid, &gid, 1)
 
-	var wg sync.WaitGroup
-	errs := make([]error, 2)
-	for i := range errs {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			_, errs[i] = repo.Leave(context.Background(), uid)
-		}(i)
-	}
-	wg.Wait()
+	for round := range 20 {
+		setMembership(t, pool, uid, &gid, 1)
 
-	success := 0
-	for _, err := range errs {
-		if err == nil {
-			success++
-		} else if !errors.Is(err, ErrNoQuota) && !errors.Is(err, ErrNoGroup) {
-			t.Errorf("ตัวที่ล้มเหลวต้องเป็น ErrNoQuota/ErrNoGroup แต่ได้ %v", err)
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		start := make(chan struct{})
+		for i := range errs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				_, errs[i] = repo.Leave(context.Background(), uid)
+			}(i)
 		}
-	}
-	if success != 1 {
-		t.Errorf("ต้องสำเร็จแค่ 1 จาก 2 แต่สำเร็จ %d", success)
-	}
-	if _, quota := readMembership(t, pool, uid); quota != 0 {
-		t.Errorf("โควตาห้ามติดลบหรือหักเกิน — ต้องเป็น 0 แต่ได้ %d", quota)
-	}
-	if n := membershipLogCount(t, pool, uid, "leave"); n != 1 {
-		t.Errorf("ต้องมี log leave แถวเดียว แต่มี %d", n)
+		close(start)
+		wg.Wait()
+
+		success := 0
+		for _, err := range errs {
+			if err == nil {
+				success++
+			} else if !errors.Is(err, ErrNoQuota) && !errors.Is(err, ErrNoGroup) {
+				t.Errorf("รอบที่ %d: ตัวที่ล้มเหลวต้องเป็น ErrNoQuota/ErrNoGroup แต่ได้ %v", round, err)
+			}
+		}
+		if success != 1 {
+			t.Errorf("รอบที่ %d: ต้องสำเร็จแค่ 1 จาก 2 แต่สำเร็จ %d", round, success)
+		}
+		if _, quota := readMembership(t, pool, uid); quota != 0 {
+			t.Errorf("รอบที่ %d: โควตาห้ามติดลบหรือหักเกิน — ต้องเป็น 0 แต่ได้ %d", round, quota)
+		}
+		if n := membershipLogCount(t, pool, uid, "leave"); n != 1 {
+			t.Errorf("รอบที่ %d: ต้องมี log leave แถวเดียว แต่มี %d", round, n)
+		}
 	}
 }
 
