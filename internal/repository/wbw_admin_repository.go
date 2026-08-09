@@ -227,13 +227,27 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 
 	// ต้องรู้ group_id "ก่อน" UPDATE เมื่อแอดมินอาจย้ายกลุ่ม — เทียบกับค่าใหม่ทีหลังเพื่อรู้ว่า
 	// เปลี่ยนจริงไหม (ส่ง group_id เดิมซ้ำมาไม่ควรถูกนับเป็นการย้าย ไม่ควรเคลียร์แชทหรือเขียน log)
+	//
+	// FOR UPDATE ล็อกแถว participant_profile (แถว "user") ของคนนี้ก่อน — ปลอดภัยกับลำดับล็อกที่
+	// Join/Leave วางไว้ (user ก่อน group เสมอ กัน deadlock) เพราะยังไม่มีจุดไหนแตะ participant_group
+	// เลยในฟังก์ชันนี้จนกว่า UPDATE ด้านล่างจะทำให้ trigger trg_group_count ยิงทีหลัง จึงยังเป็น
+	// user-ก่อน-group เหมือนเดิม ไม่ได้สลับลำดับ — กัน race ที่สอง PATCH ย้ายกลุ่มคนเดียวกันพร้อมกัน
+	// อ่าน prevGroupID เป็นค่าเก่าตรงกันทั้งคู่ (stale read) แล้วเขียน log/เคลียร์แชทซ้ำซ้อนผิดจังหวะ
 	var prevGroupID *int
 	if patch.GroupID != nil {
-		if err := tx.QueryRow(ctx,
-			`SELECT group_id FROM participant_profile WHERE user_id = $1`, id,
-		).Scan(&prevGroupID); err != nil {
+		err := tx.QueryRow(ctx,
+			`SELECT group_id FROM participant_profile WHERE user_id = $1 FOR UPDATE`, id,
+		).Scan(&prevGroupID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
 		}
+		// ไม่มีแถว participant_profile เลย — เกิดกับ role='participant' ที่ยังไม่เคยถูกเติมโปรไฟล์
+		// (ประชากรกลุ่มเดียวกับที่ COALESCE(p.leave_quota, 0) ใน participantSelect กันไว้อยู่แล้ว)
+		// exists check ต้นฟังก์ชันเช็คแค่ wbw_user เท่านั้น ไม่เคยบังคับว่าต้องมี participant_profile
+		// ด้วย ก่อนหน้านี้ PATCH เคสนี้จึงตอบ 200 มาตลอด (UPDATE/INSERT...SELECT ด้านล่างที่อ้าง
+		// participant_profile ก็แค่โดน 0 แถวเงียบ ๆ ไม่ error) ถ้า return ErrNotFound ตรงนี้จะกลายเป็น
+		// 404 ใหม่ที่ไม่เคยมีมาก่อนสำหรับ endpoint นี้ จึงเลือกตีความว่า "ไม่มีกลุ่มเดิม" แทน
+		// (prevGroupID เป็น nil ตามค่าเริ่มต้นของตัวแปรอยู่แล้ว) แล้วปล่อยให้ทำงานต่อ ไม่ตัดจบ transaction
 	}
 
 	if _, err := tx.Exec(ctx, `
@@ -274,6 +288,25 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 	if patch.GroupID != nil && (prevGroupID == nil || *prevGroupID != *patch.GroupID) {
 		if _, err := tx.Exec(ctx,
 			`DELETE FROM group_chat_state WHERE user_id = $1`, id); err != nil {
+			return nil, err
+		}
+		// DELETE อย่างเดียวไม่พอ — SinceID (wbw_chat_repository.go) คืน COALESCE(MAX(since_id), 0)
+		// เมื่อไม่มีแถวเลย นั่นคือจุดตัด = 0 แปลว่าเห็นประวัติแชท "ทั้งหมด" ของกลุ่มปลายทางย้อนไปถึง
+		// ก่อนที่เขาจะย้ายเข้ามา ตรงกับ chat-backlog leak ที่ finding นี้พูดถึงเป๊ะ ต้อง INSERT
+		// จุดตัดใหม่ทันทีในทรานแซกชันเดียวกัน เหมือนที่ Join ทำ (wbw_group_repository.go) —
+		// since_id/last_read_id ตั้งเป็นข้อความล่าสุดของกลุ่มปลายทาง ณ ตอนนี้ ไม่ใช่ 0 ผู้ใช้จะเห็น
+		// แชทเริ่มจากตอนที่ถูกย้ายเข้ามาเท่านั้น (ใช้ ON CONFLICT DO UPDATE เผื่อกรณีย้ายกลับเข้ากลุ่ม
+		// เดิมที่เคยมีจุดตัดจริงอยู่ก่อน — DELETE ด้านบนลบไปแล้ว จุดตัดใหม่ตรงนี้เขียนทับให้ถูกอยู่ดี
+		// ไม่ใช่ปล่อยว่างจนกลายเป็น 0 ที่กว้างขึ้นกว่าเดิม)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO group_chat_state (user_id, group_id, since_id, last_read_id, read_at)
+			SELECT $1, $2, COALESCE(MAX(id), 0), COALESCE(MAX(id), 0), now()
+			  FROM group_message WHERE group_id = $2
+			ON CONFLICT (user_id, group_id) DO UPDATE
+			   SET since_id = EXCLUDED.since_id,
+			       last_read_id = EXCLUDED.since_id,
+			       read_at = now()`,
+			id, *patch.GroupID); err != nil {
 			return nil, err
 		}
 		if _, err := tx.Exec(ctx, `
