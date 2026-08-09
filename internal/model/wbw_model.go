@@ -154,6 +154,19 @@ type ParticipantDetail struct {
 	FoodAllergies  *string `json:"food_allergies"`
 	ChronicDisease *string `json:"chronic_disease"`
 	Medications    *string `json:"medications"`
+
+	MembershipLog []MembershipLogEntry `json:"membership_log"`
+}
+
+// MembershipLogEntry — หนึ่งบรรทัดของประวัติเข้า/ออก/ปรับสิทธิ์ ในหน้ารายละเอียดผู้เข้าร่วม
+// actor_name เป็น NULL แปลว่าผู้ใช้ทำเอง ไม่ใช่ admin ทำให้
+type MembershipLogEntry struct {
+	Action      string  `json:"action"`
+	GroupID     *int    `json:"group_id"`
+	GroupNumber *int    `json:"group_number"`
+	QuotaAfter  int     `json:"quota_after"`
+	ActorName   *string `json:"actor_name"`
+	CreatedAt   string  `json:"created_at"`
 }
 
 // ParticipantPatch — ทุก field เป็น pointer เพื่อแยก "ไม่ได้ส่งมา" ออกจาก "ส่งค่าว่าง"

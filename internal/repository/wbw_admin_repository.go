@@ -156,6 +156,35 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 	if err != nil {
 		return nil, err
 	}
+
+	// 10 แถวล่าสุดพอสำหรับคำถามที่หน้านี้ตอบ ("คนนี้ออกกี่ครั้ง ตอนไหน ใครปรับให้") — index
+	// idx_gml_user (user_id, log_id DESC) ทำให้เป็นการอ่าน 10 แถวแรกตรง ๆ ไม่ใช่การเรียงทั้งตาราง
+	rows, err := r.db.Query(ctx, `
+		SELECT l.action, l.group_id, g.group_number, l.quota_after, a.display_name, l.created_at::text
+		  FROM group_membership_log l
+		  LEFT JOIN participant_group g ON g.group_id = l.group_id
+		  LEFT JOIN wbw_user          a ON a.user_id  = l.actor_id
+		 WHERE l.user_id = $1
+		 ORDER BY l.log_id DESC
+		 LIMIT 10`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	d.MembershipLog = []model.MembershipLogEntry{}
+	for rows.Next() {
+		var e model.MembershipLogEntry
+		if err := rows.Scan(&e.Action, &e.GroupID, &e.GroupNumber, &e.QuotaAfter,
+			&e.ActorName, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		d.MembershipLog = append(d.MembershipLog, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return &d, nil
 }
 
