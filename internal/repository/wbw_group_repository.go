@@ -15,6 +15,10 @@ var (
 	ErrGroupFull = errors.New("group full")
 	// ErrNoGroup — ยังไม่ได้อยู่กลุ่มไหนเลย ตอนสั่งออกจากกลุ่ม
 	ErrNoGroup = errors.New("not in a group")
+	// ErrNoQuota — สิทธิ์ออกจากกลุ่มหมดแล้ว (handler แปลงเป็น 409)
+	ErrNoQuota = errors.New("no leave quota")
+	// ErrAlreadyInGroup — ยังอยู่ในกลุ่มอื่น ต้องออกก่อนถึงจะเข้ากลุ่มใหม่ได้ (handler แปลงเป็น 409)
+	ErrAlreadyInGroup = errors.New("already in a group")
 )
 
 type WBWGroupRepository struct {
@@ -73,10 +77,10 @@ func (r *WBWGroupRepository) MembersIndex(ctx context.Context) ([]model.GroupMem
 	return list, rows.Err()
 }
 
-// Join — เข้ากลุ่มแบบ atomic กันที่นั่งเกิน แล้วตั้งจุดตัดประวัติแชทใหม่
+// Join — เข้ากลุ่มแบบ atomic กันที่นั่งเกิน แล้วตั้งจุดตัดประวัติแชทใหม่ + เขียน log ทุกครั้งที่สำเร็จ
 //
-// เข้ากลุ่มเดิมซ้ำก็ตัดประวัติใหม่ทุกครั้ง ตามที่ออกแบบไว้ (อธิบายง่ายและเป็นส่วนตัวที่สุด)
-// คืน ErrNotFound เมื่อไม่มีกลุ่มนี้ · ErrGroupFull เมื่อเต็ม
+// อยู่กลุ่มไหนอยู่แล้วเข้าซ้ำ/ย้ายตรง ๆ ไม่ได้ ต้อง Leave ก่อนเสมอ เพราะโควตาหักตอนออกจากกลุ่มเท่านั้น
+// คืน ErrNotFound เมื่อไม่มีกลุ่มนี้ · ErrGroupFull เมื่อเต็ม · ErrAlreadyInGroup เมื่อมีกลุ่มอยู่แล้ว
 func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID int) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -84,7 +88,24 @@ func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID in
 	}
 	defer tx.Rollback(ctx)
 
-	// ล็อกแถวกลุ่มปลายทางก่อน กันสองคนแย่งที่นั่งสุดท้ายพร้อมกัน
+	// ล็อกแถวผู้ใช้ก่อนแถวกลุ่มเสมอ — Leave ล็อก user แล้วให้ trigger trg_group_count ล็อก
+	// participant_group ต่อในทรานแซกชันเดียวกัน (user → group) ถ้า Join ล็อกสลับข้าง (group → user)
+	// เหมือนเดิม พอ join/leave ของ user คนเดียวกันชนกันพอดี จะเกิด lock cycle ให้ Postgres
+	// ฟ้อง deadlock แล้วโดน rollback เป็น 500 ห้ามสลับกลับ แม้จะดูเหมือนจัดกลุ่ม query ให้เป็นระเบียบกว่า
+	var current *int
+	if err := tx.QueryRow(ctx,
+		`SELECT group_id FROM participant_profile WHERE user_id = $1 FOR UPDATE`,
+		userID).Scan(&current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if current != nil {
+		return ErrAlreadyInGroup
+	}
+
+	// ล็อกแถวกลุ่มปลายทาง กันสองคนแย่งที่นั่งสุดท้ายพร้อมกัน
 	var capacity, memberCount int
 	err = tx.QueryRow(ctx,
 		`SELECT capacity, member_count FROM participant_group WHERE group_id = $1 FOR UPDATE`,
@@ -95,31 +116,22 @@ func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID in
 	if err != nil {
 		return err
 	}
-
-	// อยู่กลุ่มนี้อยู่แล้วไหม — ถ้าใช่ ข้ามการเช็คที่นั่ง เพราะเขานั่งอยู่ในนั้นแล้ว
-	// (ไม่ข้าม = กลุ่มที่เต็มพอดีจะกดเข้าซ้ำเพื่อตัดประวัติไม่ได้เลย)
-	var current *int
-	if err := tx.QueryRow(ctx,
-		`SELECT group_id FROM participant_profile WHERE user_id = $1`,
-		userID).Scan(&current); err != nil {
-		if err == pgx.ErrNoRows {
-			return ErrNotFound
-		}
-		return err
-	}
-	alreadyHere := current != nil && *current == groupID
-	if !alreadyHere && memberCount >= capacity {
+	if memberCount >= capacity {
 		return ErrGroupFull
 	}
 
 	// trigger trg_group_count ปรับ member_count ให้ทั้งกลุ่มเก่าและใหม่เอง
-	if _, err := tx.Exec(ctx,
-		`UPDATE participant_profile SET group_id = $1, updated_at = now() WHERE user_id = $2`,
-		groupID, userID); err != nil {
+	var quota int
+	if err := tx.QueryRow(ctx,
+		`UPDATE participant_profile SET group_id = $1, updated_at = now()
+		  WHERE user_id = $2 RETURNING leave_quota`,
+		groupID, userID).Scan(&quota); err != nil {
 		return err
 	}
 
 	// ย้ายกลุ่ม = ทิ้ง state ของกลุ่มเก่า ไม่งั้น cursor เก่าค้างอยู่ในตารางตลอด
+	// (ตอนนี้เป็น no-op เชิงป้องกันเท่านั้น — มาถึงบรรทัดนี้ได้แปลว่า current เป็น nil เสมอ
+	// คือไม่เคยมีกลุ่มเก่า และ Leave ก็ลบแถว group_chat_state ทั้งหมดของ user ไปแล้วตอนออก)
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM group_chat_state WHERE user_id = $1 AND group_id <> $2`,
 		userID, groupID); err != nil {
@@ -140,11 +152,25 @@ func (r *WBWGroupRepository) Join(ctx context.Context, userID string, groupID in
 		return err
 	}
 
+	// quota_after = ค่าปัจจุบัน (การเข้ากลุ่มไม่หักสิทธิ์) — เก็บไว้เพื่อให้ไทม์ไลน์อ่านแล้วเห็นสถานะ ณ ตอนนั้น
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO group_membership_log (user_id, group_id, action, quota_after)
+		VALUES ($1, $2, 'join', $3)`, userID, groupID, quota); err != nil {
+		return err
+	}
+
 	return tx.Commit(ctx)
 }
 
-// Leave — ออกจากกลุ่ม · ลบ chat state ด้วย ไม่งั้นคนที่ออกไปแล้วยังถูกนับใน "อ่านแล้ว N"
-// คืน groupID เดิมที่ออกมา เพื่อให้ service ปลุก long-poll ของกลุ่มนั้นให้ member_count สดทันที
+// Leave — ออกจากกลุ่ม + หักโควตา 1 ครั้ง ในทรานแซกชันเดียว
+//
+// เงื่อนไข leave_quota > 0 อยู่ใน WHERE ของ UPDATE ตัวเดียวกับที่เคลียร์ group_id ตั้งใจ —
+// ถ้าแยกเป็น SELECT เช็คก่อนแล้วค่อย UPDATE สองคำขอที่มาพร้อมกันจะอ่านเห็น quota = 1 ทั้งคู่
+// แล้วหักคนละครั้งจน quota ติดลบและออกได้สองรอบ
+//
+// กลุ่มเดิมดึงมาจาก CTE ไม่ใช่ subquery ใน RETURNING — subquery ใน RETURNING ให้ค่าตาม
+// snapshot semantics ซึ่งอ่านแล้วเดาไม่ออกว่าได้ค่าก่อนหรือหลัง UPDATE (เหตุผลเดียวกับที่โค้ดเดิม
+// เลี่ยงไว้) · ลบ chat state ด้วย ไม่งั้นคนที่ออกไปแล้วยังถูกนับใน "อ่านแล้ว N"
 func (r *WBWGroupRepository) Leave(ctx context.Context, userID string) (int, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -152,34 +178,57 @@ func (r *WBWGroupRepository) Leave(ctx context.Context, userID string) (int, err
 	}
 	defer tx.Rollback(ctx)
 
-	// อ่านกลุ่มเดิมก่อนแล้วค่อย UPDATE — ไม่ใช้ subquery ใน RETURNING เพราะค่าที่ได้
-	// ขึ้นกับ snapshot semantics ซึ่งอ่านแล้วเดาไม่ออกว่าเป็นค่าเก่าหรือใหม่
-	var prev *int
-	err = tx.QueryRow(ctx,
-		`SELECT group_id FROM participant_profile WHERE user_id = $1 FOR UPDATE`,
-		userID).Scan(&prev)
-	if err == pgx.ErrNoRows {
-		return 0, ErrNotFound
+	var prevGroup, quotaAfter int
+	err = tx.QueryRow(ctx, `
+		WITH target AS (
+		  SELECT user_id, group_id
+		    FROM participant_profile
+		   WHERE user_id = $1 AND group_id IS NOT NULL AND leave_quota > 0
+		     FOR UPDATE
+		)
+		UPDATE participant_profile p
+		   SET group_id = NULL, leave_quota = p.leave_quota - 1, updated_at = now()
+		  FROM target t
+		 WHERE p.user_id = t.user_id
+		RETURNING t.group_id, p.leave_quota`, userID).Scan(&prevGroup, &quotaAfter)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// ไม่โดนแถวไหนเลย — ต้องแยกว่าเพราะไม่มีกลุ่ม (ผลลัพธ์ที่ต้องการเกิดแล้ว) หรือสิทธิ์หมด (ปฏิเสธ)
+		return 0, leaveBlockedReason(ctx, tx, userID)
 	}
 	if err != nil {
-		return 0, err
-	}
-	if prev == nil {
-		return 0, ErrNoGroup
-	}
-
-	if _, err := tx.Exec(ctx,
-		`UPDATE participant_profile SET group_id = NULL, updated_at = now() WHERE user_id = $1`,
-		userID); err != nil {
 		return 0, err
 	}
 
 	if _, err := tx.Exec(ctx, `DELETE FROM group_chat_state WHERE user_id = $1`, userID); err != nil {
 		return 0, err
 	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO group_membership_log (user_id, group_id, action, quota_after)
+		VALUES ($1, $2, 'leave', $3)`, userID, prevGroup, quotaAfter); err != nil {
+		return 0, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return *prev, nil
+	return prevGroup, nil
+}
+
+// leaveBlockedReason — อ่านสถานะจริงในทรานแซกชันเดียวกัน เพื่อบอกสาเหตุที่ UPDATE ไม่โดนแถวไหน
+func leaveBlockedReason(ctx context.Context, tx pgx.Tx, userID string) error {
+	var groupID *int
+	var quota int
+	err := tx.QueryRow(ctx,
+		`SELECT group_id, leave_quota FROM participant_profile WHERE user_id = $1`,
+		userID).Scan(&groupID, &quota)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if groupID == nil {
+		return ErrNoGroup
+	}
+	return ErrNoQuota
 }

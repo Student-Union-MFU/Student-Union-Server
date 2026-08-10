@@ -62,6 +62,8 @@ func (h *WBWGroupHandler) Join(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteError(w, http.StatusConflict, "กลุ่มเต็มแล้ว เลือกกลุ่มอื่น")
 	case errors.Is(err, repository.ErrNotFound):
 		middleware.WriteError(w, http.StatusNotFound, "ไม่พบกลุ่มนี้")
+	case errors.Is(err, repository.ErrAlreadyInGroup):
+		middleware.WriteError(w, http.StatusConflict, "ท่านอยู่ในกลุ่มอยู่แล้ว ต้องออกจากกลุ่มเดิมก่อน")
 	case err != nil:
 		slog.Error("join group failed", "err", err)
 		middleware.WriteError(w, http.StatusInternalServerError, "เข้ากลุ่มไม่สำเร็จ")
@@ -81,6 +83,8 @@ func (h *WBWGroupHandler) Leave(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	case errors.Is(err, repository.ErrNotFound):
 		middleware.WriteError(w, http.StatusNotFound, "ไม่พบข้อมูลผู้เข้าร่วม")
+	case errors.Is(err, repository.ErrNoQuota):
+		middleware.WriteError(w, http.StatusConflict, "สิทธิ์ออกจากกลุ่มหมดแล้ว")
 	case err != nil:
 		slog.Error("leave group failed", "err", err)
 		middleware.WriteError(w, http.StatusInternalServerError, "ออกจากกลุ่มไม่สำเร็จ")

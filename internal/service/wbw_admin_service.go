@@ -17,6 +17,8 @@ var (
 	ErrSelfRole      = errors.New("cannot change own role")
 	ErrSelfDelete    = errors.New("cannot delete self")
 	ErrEmptyName     = errors.New("empty name")
+	// ErrBadQuota — โควตานอกช่วงที่ยอมรับ · เพดาน 10 กันพิมพ์พลาดเป็นหลักพันจนกติกาหายไปทั้งงาน
+	ErrBadQuota = errors.New("leave quota out of range")
 )
 
 var validCheckpointTypes = []string{"activity", "restroom", "welfare", "recreation", "service"}
@@ -67,11 +69,15 @@ func (s *WBWAdminService) Log(ctx context.Context, actorID, actorName, action, d
 
 /* ---------- participants ---------- */
 
-func (s *WBWAdminService) UpdateParticipant(ctx context.Context, id string, patch model.ParticipantPatch) (*model.Participant, error) {
+func (s *WBWAdminService) UpdateParticipant(ctx context.Context, id string, patch model.ParticipantPatch, actorID string) (*model.Participant, error) {
 	if patch.StudentID != nil && !studentIDRe.MatchString(*patch.StudentID) {
 		return nil, ErrBadStudentID
 	}
-	return s.admin.UpdateParticipant(ctx, id, patch)
+	// ช่วง 0–10 ตายตัว ต้องตรงกับที่ dashboard ใช้ · เช็คก่อนแตะ repository กัน quota_adjust log เพี้ยน
+	if patch.LeaveQuota != nil && (*patch.LeaveQuota < 0 || *patch.LeaveQuota > 10) {
+		return nil, ErrBadQuota
+	}
+	return s.admin.UpdateParticipant(ctx, id, patch, actorID)
 }
 
 func (s *WBWAdminService) ResetParticipantPassword(ctx context.Context, id, password string) (string, error) {

@@ -109,6 +109,7 @@ type Participant struct {
 	GroupNumber  *int    `json:"group_number"`
 	CheckedIn    bool    `json:"checked_in"`
 	BloodType    *string `json:"blood_type"`
+	LeaveQuota   int     `json:"leave_quota"`
 }
 
 type ParticipantDetail struct {
@@ -139,6 +140,7 @@ type ParticipantDetail struct {
 	GroupNumber               *int     `json:"group_number"`
 	PhotoURL                  *string  `json:"photo_url"`
 	CheckedIn                 bool     `json:"checked_in"`
+	LeaveQuota                int      `json:"leave_quota"`
 	EmergencyContactName      *string  `json:"emergency_contact_name"`
 	EmergencyContactPhone     *string  `json:"emergency_contact_phone"`
 	BloodType                 *string  `json:"blood_type"`
@@ -152,6 +154,19 @@ type ParticipantDetail struct {
 	FoodAllergies  *string `json:"food_allergies"`
 	ChronicDisease *string `json:"chronic_disease"`
 	Medications    *string `json:"medications"`
+
+	MembershipLog []MembershipLogEntry `json:"membership_log"`
+}
+
+// MembershipLogEntry — หนึ่งบรรทัดของประวัติเข้า/ออก/ปรับสิทธิ์ ในหน้ารายละเอียดผู้เข้าร่วม
+// actor_name เป็น NULL แปลว่าผู้ใช้ทำเอง ไม่ใช่ admin ทำให้
+type MembershipLogEntry struct {
+	Action      string  `json:"action"`
+	GroupID     *int    `json:"group_id"`
+	GroupNumber *int    `json:"group_number"`
+	QuotaAfter  int     `json:"quota_after"`
+	ActorName   *string `json:"actor_name"`
+	CreatedAt   string  `json:"created_at"`
 }
 
 // ParticipantPatch — ทุก field เป็น pointer เพื่อแยก "ไม่ได้ส่งมา" ออกจาก "ส่งค่าว่าง"
@@ -171,6 +186,8 @@ type ParticipantPatch struct {
 	BloodType             *string  `json:"blood_type"`
 	WeightKg              *float64 `json:"weight_kg"`
 	HeightCm              *float64 `json:"height_cm"`
+	// pointer เพื่อแยก "ไม่ได้ส่งมา" ออกจาก "ส่ง 0" — ไม่ส่ง key นี้ต้องไม่สร้างแถวประวัติ quota_adjust
+	LeaveQuota *int `json:"leave_quota"`
 }
 
 // HasHealthFields บอกว่า body มี key ด้านสุขภาพไหม — Express จะแตะ health_details

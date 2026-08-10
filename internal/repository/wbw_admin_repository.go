@@ -30,7 +30,11 @@ const participantSelect = `
 	       p.school_id, s.name AS school_name, p.major, p.sex::text,
 	       p.group_id, g.group_number,
 	       COALESCE(p.checked_in, FALSE) AS checked_in,
-	       h.blood_type::text
+	       h.blood_type::text,
+	       -- role='participant' ที่ยังไม่มีแถว participant_profile ทำให้ p.leave_quota เป็น NULL
+	       -- ผ่าน LEFT JOIN นี้ — scan ตรงเข้า int (ไม่ใช่ pointer) จะ error ทั้งคำสั่ง แล้วพังทั้งหน้ารายชื่อ
+	       -- (เหตุผลเดียวกับ COALESCE(p.checked_in, FALSE) บรรทัดบน)
+	       COALESCE(p.leave_quota, 0) AS leave_quota
 	  FROM wbw_user u
 	  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 	  LEFT JOIN school            s ON s.school_id = p.school_id
@@ -41,7 +45,7 @@ func scanParticipant(row pgx.Row) (*model.Participant, error) {
 	var p model.Participant
 	err := row.Scan(&p.ID, &p.StudentID, &p.Created, &p.Bib, &p.FirstName, &p.LastName,
 		&p.ContactPhone, &p.SchoolID, &p.SchoolName, &p.Major, &p.Sex,
-		&p.GroupID, &p.GroupNumber, &p.CheckedIn, &p.BloodType)
+		&p.GroupID, &p.GroupNumber, &p.CheckedIn, &p.BloodType, &p.LeaveQuota)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +134,10 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		       -- id/bib ที่ web-next ใช้อยู่ ตั้งใจส่งทั้งสองชื่อ ไม่เปลี่ยนของเดิม
 		       u.user_id::text, u.username, u.role,
 		       p.bib_number, p.qr_token, p.year,
-		       h.food_allergies, h.chronic_disease, h.medications
+		       h.food_allergies, h.chronic_disease, h.medications,
+		       -- เหตุผลเดียวกับ participantSelect ด้านบน — LEFT JOIN นี้ให้ NULL ได้เมื่อไม่มี
+		       -- participant_profile และ d.LeaveQuota เป็น int ธรรมดา ไม่ใช่ pointer
+		       COALESCE(p.leave_quota, 0)
 		  FROM wbw_user u
 		  LEFT JOIN participant_profile p ON p.user_id = u.user_id
 		  LEFT JOIN school            s ON s.school_id = p.school_id
@@ -146,18 +153,49 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		&d.ConsentHealthData, &d.ConsentEmergencyTreatment, &d.WaiverAccepted,
 		&d.UserID, &d.Username, &d.Role,
 		&d.BibNumber, &d.QRToken, &d.Year,
-		&d.FoodAllergies, &d.ChronicDisease, &d.Medications)
+		&d.FoodAllergies, &d.ChronicDisease, &d.Medications,
+		&d.LeaveQuota)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+
+	// 10 แถวล่าสุดพอสำหรับคำถามที่หน้านี้ตอบ ("คนนี้ออกกี่ครั้ง ตอนไหน ใครปรับให้") — index
+	// idx_gml_user (user_id, log_id DESC) ทำให้เป็นการอ่าน 10 แถวแรกตรง ๆ ไม่ใช่การเรียงทั้งตาราง
+	rows, err := r.db.Query(ctx, `
+		SELECT l.action, l.group_id, g.group_number, l.quota_after, a.display_name, l.created_at::text
+		  FROM group_membership_log l
+		  LEFT JOIN participant_group g ON g.group_id = l.group_id
+		  LEFT JOIN wbw_user          a ON a.user_id  = l.actor_id
+		 WHERE l.user_id = $1
+		 ORDER BY l.log_id DESC
+		 LIMIT 10`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	d.MembershipLog = []model.MembershipLogEntry{}
+	for rows.Next() {
+		var e model.MembershipLogEntry
+		if err := rows.Scan(&e.Action, &e.GroupID, &e.GroupNumber, &e.QuotaAfter,
+			&e.ActorName, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		d.MembershipLog = append(d.MembershipLog, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return &d, nil
 }
 
 // UpdateParticipant ใช้ COALESCE — field ที่ไม่ส่งมา (nil) คงค่าเดิม ลบค่าไม่ได้ (ตามของเดิม)
-func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, patch model.ParticipantPatch) (*model.Participant, error) {
+// actorID มาจาก admin ที่เรียก PATCH — ใช้บันทึกแถว quota_adjust ว่าใครเป็นคนปรับให้
+func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, patch model.ParticipantPatch, actorID string) (*model.Participant, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -187,6 +225,31 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 		sex = patch.Sex
 	}
 
+	// ต้องรู้ group_id "ก่อน" UPDATE เมื่อแอดมินอาจย้ายกลุ่ม — เทียบกับค่าใหม่ทีหลังเพื่อรู้ว่า
+	// เปลี่ยนจริงไหม (ส่ง group_id เดิมซ้ำมาไม่ควรถูกนับเป็นการย้าย ไม่ควรเคลียร์แชทหรือเขียน log)
+	//
+	// FOR UPDATE ล็อกแถว participant_profile (แถว "user") ของคนนี้ก่อน — ปลอดภัยกับลำดับล็อกที่
+	// Join/Leave วางไว้ (user ก่อน group เสมอ กัน deadlock) เพราะยังไม่มีจุดไหนแตะ participant_group
+	// เลยในฟังก์ชันนี้จนกว่า UPDATE ด้านล่างจะทำให้ trigger trg_group_count ยิงทีหลัง จึงยังเป็น
+	// user-ก่อน-group เหมือนเดิม ไม่ได้สลับลำดับ — กัน race ที่สอง PATCH ย้ายกลุ่มคนเดียวกันพร้อมกัน
+	// อ่าน prevGroupID เป็นค่าเก่าตรงกันทั้งคู่ (stale read) แล้วเขียน log/เคลียร์แชทซ้ำซ้อนผิดจังหวะ
+	var prevGroupID *int
+	if patch.GroupID != nil {
+		err := tx.QueryRow(ctx,
+			`SELECT group_id FROM participant_profile WHERE user_id = $1 FOR UPDATE`, id,
+		).Scan(&prevGroupID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+		// ไม่มีแถว participant_profile เลย — เกิดกับ role='participant' ที่ยังไม่เคยถูกเติมโปรไฟล์
+		// (ประชากรกลุ่มเดียวกับที่ COALESCE(p.leave_quota, 0) ใน participantSelect กันไว้อยู่แล้ว)
+		// exists check ต้นฟังก์ชันเช็คแค่ wbw_user เท่านั้น ไม่เคยบังคับว่าต้องมี participant_profile
+		// ด้วย ก่อนหน้านี้ PATCH เคสนี้จึงตอบ 200 มาตลอด (UPDATE/INSERT...SELECT ด้านล่างที่อ้าง
+		// participant_profile ก็แค่โดน 0 แถวเงียบ ๆ ไม่ error) ถ้า return ErrNotFound ตรงนี้จะกลายเป็น
+		// 404 ใหม่ที่ไม่เคยมีมาก่อนสำหรับ endpoint นี้ จึงเลือกตีความว่า "ไม่มีกลุ่มเดิม" แทน
+		// (prevGroupID เป็น nil ตามค่าเริ่มต้นของตัวแปรอยู่แล้ว) แล้วปล่อยให้ทำงานต่อ ไม่ตัดจบ transaction
+	}
+
 	if _, err := tx.Exec(ctx, `
 		UPDATE participant_profile SET
 		  first_name              = COALESCE($2, first_name),
@@ -200,13 +263,71 @@ func (r *WBWAdminRepository) UpdateParticipant(ctx context.Context, id string, p
 		  emergency_contact_name  = COALESCE($10, emergency_contact_name),
 		  emergency_contact_phone = COALESCE($11, emergency_contact_phone),
 		  checked_in              = COALESCE($12, checked_in),
+		  leave_quota             = COALESCE($13, leave_quota),
 		  updated_at              = now()
 		WHERE user_id = $1`,
 		id, patch.FirstName, patch.LastName, patch.ContactPhone, patch.Major,
 		patch.SchoolID, patch.GroupID, sex, patch.DateOfBirth,
 		patch.EmergencyContactName, patch.EmergencyContactPhone, patch.CheckedIn,
+		patch.LeaveQuota,
 	); err != nil {
 		return nil, err
+	}
+
+	// แอดมินย้ายกลุ่มให้ตรง ๆ ไม่ผ่าน Join — ก่อนหน้านี้ผู้เข้าร่วมย้ายกลุ่มได้ทางเดียวคือ Join
+	// เอง ซึ่งเคลียร์ group_chat_state ให้เสมอ (จุดตัดประวัติแชทตั้งใหม่ทุกครั้งที่เข้ากลุ่ม) เส้นทาง
+	// PATCH นี้ข้าม Join ไปเลย ถ้าไม่เคลียร์ตรงนี้ด้วย cursor เก่าจะยังชี้ไปกลุ่มเดิม แล้วคนที่ย้ายมาใหม่
+	// จะอ่านแชทของกลุ่มปลายทางย้อนหลังไปถึงก่อนที่เขาจะย้ายเข้ามาได้ทั้งหมด
+	//
+	// เช็คว่า "เปลี่ยนจริง" ก่อนเสมอ — ส่ง group_id เดิมซ้ำมาไม่ควรไปรีเซ็ตจุดตัดแชทของคนที่ไม่ได้ย้ายไปไหน
+	//
+	// action ใช้ 'join' (ไม่ใช่ 'leave' เพราะเขายังมีกลุ่มอยู่ ไม่ได้ออกไปเฉย ๆ ไม่ใช่ 'quota_adjust'
+	// เพราะการย้ายนี้ไม่แตะโควตาเลย) — เข้ากลุ่มใหม่คือ 'join' เหมือนตอนผู้ใช้ Join เอง และ group_id
+	// ที่บันทึกคือกลุ่มปลายทาง (สมมาตรกับที่ Join บันทึกกลุ่มที่เพิ่งเข้า ไม่ใช่กลุ่มที่จากมา)
+	// quota_after อ่านค่าปัจจุบันสด ๆ เพราะ PATCH เดียวกันอาจส่ง leave_quota มาด้วย
+	if patch.GroupID != nil && (prevGroupID == nil || *prevGroupID != *patch.GroupID) {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM group_chat_state WHERE user_id = $1`, id); err != nil {
+			return nil, err
+		}
+		// DELETE อย่างเดียวไม่พอ — SinceID (wbw_chat_repository.go) คืน COALESCE(MAX(since_id), 0)
+		// เมื่อไม่มีแถวเลย นั่นคือจุดตัด = 0 แปลว่าเห็นประวัติแชท "ทั้งหมด" ของกลุ่มปลายทางย้อนไปถึง
+		// ก่อนที่เขาจะย้ายเข้ามา ตรงกับ chat-backlog leak ที่ finding นี้พูดถึงเป๊ะ ต้อง INSERT
+		// จุดตัดใหม่ทันทีในทรานแซกชันเดียวกัน เหมือนที่ Join ทำ (wbw_group_repository.go) —
+		// since_id/last_read_id ตั้งเป็นข้อความล่าสุดของกลุ่มปลายทาง ณ ตอนนี้ ไม่ใช่ 0 ผู้ใช้จะเห็น
+		// แชทเริ่มจากตอนที่ถูกย้ายเข้ามาเท่านั้น (ใช้ ON CONFLICT DO UPDATE เผื่อกรณีย้ายกลับเข้ากลุ่ม
+		// เดิมที่เคยมีจุดตัดจริงอยู่ก่อน — DELETE ด้านบนลบไปแล้ว จุดตัดใหม่ตรงนี้เขียนทับให้ถูกอยู่ดี
+		// ไม่ใช่ปล่อยว่างจนกลายเป็น 0 ที่กว้างขึ้นกว่าเดิม)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO group_chat_state (user_id, group_id, since_id, last_read_id, read_at)
+			SELECT $1, $2, COALESCE(MAX(id), 0), COALESCE(MAX(id), 0), now()
+			  FROM group_message WHERE group_id = $2
+			ON CONFLICT (user_id, group_id) DO UPDATE
+			   SET since_id = EXCLUDED.since_id,
+			       last_read_id = EXCLUDED.since_id,
+			       read_at = now()`,
+			id, *patch.GroupID); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO group_membership_log (user_id, group_id, action, quota_after, actor_id)
+			SELECT $1, group_id, 'join', leave_quota, $2
+			  FROM participant_profile WHERE user_id = $1`,
+			id, actorID); err != nil {
+			return nil, err
+		}
+	}
+
+	// log เฉพาะตอนที่ค่านี้ถูกส่งมาจริง — PATCH ตัวอื่น (แก้ชื่อ, เช็คอิน) ไม่ควรสร้างแถวประวัติโควตาขึ้นมา
+	// อ่าน group_id สดในทรานแซกชันเดียวกัน เพื่อให้ไทม์ไลน์บอกได้ว่าตอนถูกปรับ เขาอยู่กลุ่มไหน
+	if patch.LeaveQuota != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO group_membership_log (user_id, group_id, action, quota_after, actor_id)
+			SELECT $1, group_id, 'quota_adjust', $2, $3
+			  FROM participant_profile WHERE user_id = $1`,
+			id, *patch.LeaveQuota, actorID); err != nil {
+			return nil, err
+		}
 	}
 
 	// health_details แตะเฉพาะเมื่อ body มี key ด้านสุขภาพ (ตาม Express)
