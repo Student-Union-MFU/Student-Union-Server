@@ -105,7 +105,7 @@ func (r *UserRepository) Insert(ctx context.Context, user model.User) (*model.Us
 	}
 	return &result, nil
 }
- 
+
 // Upsert is for OAuth login — only has fields Google provides
 func (r *UserRepository) Upsert(ctx context.Context, user model.User) (*model.User, error) {
 	var result model.User
@@ -142,7 +142,7 @@ func (r *UserRepository) Upsert(ctx context.Context, user model.User) (*model.Us
 	}
 	return &result, nil
 }
- 
+
 func (r *UserRepository) UpdateProfile(ctx context.Context, user model.User) (*model.User, error) {
 	var result model.User
 	err := r.db.QueryRow(ctx,

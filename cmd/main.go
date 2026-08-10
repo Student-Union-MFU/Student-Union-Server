@@ -246,6 +246,28 @@ func main() {
 		})
 	})
 
+	// ---------- Club Fair ----------
+	// Its own token service and its own secret: a Club Fair token must never
+	// verify as an SU one, because clubfair_users.id and users.id are different
+	// people. See ClubFairTokenService for the whole argument.
+	clubFairTokens := service.NewClubFairTokenService()
+
+	clubFairAuthRepo := repository.NewClubFairAuthRepository(pool)
+	clubFairAuthService := service.NewClubFairAuthService(clubFairAuthRepo, clubFairTokens)
+	clubFairAuthHandler := handler.NewClubFairAuthHandler(clubFairAuthService)
+
+	clubFairFairRepo := repository.NewClubFairFairRepository(pool)
+	clubFairCheckInService := service.NewClubFairCheckInService(clubFairFairRepo)
+	clubFairFairHandler := handler.NewClubFairFairHandler(clubFairCheckInService)
+
+	clubFairChannelRepo := repository.NewClubFairChannelRepository(pool)
+	clubFairChannelService := service.NewClubFairChannelService(clubFairChannelRepo)
+	clubFairChannelHandler := handler.NewClubFairChannelHandler(clubFairChannelService)
+
+	requireClubFair := appmw.RequireClubFairAuth(clubFairTokens)
+	requireClubFairStaff := appmw.RequireClubFairRole(
+		appmw.ClubFairRoleStaff, appmw.ClubFairRoleAdmin)
+
 	/* ============================================================
 	   WBW routes — เว็บ web-next proxy /api/* มาที่นี่
 	   next.config.ts ตัด /api ออก แล้วยิงไป ${API_UPSTREAM}/:path*
@@ -379,6 +401,77 @@ func main() {
 			})
 		})
 	})
+
+	/* ============================================================
+	   Club Fair routes.
+
+	   Registered only when CLUBFAIR_JWT_SECRET is set. That is deliberate: with
+	   no signing key these endpoints could neither issue nor verify a token, and
+	   a 404 on a new surface is a far better failure than a live endpoint with no
+	   security. The server still starts, so a missing variable does not take
+	   Walk-Bike-Week and the SU app down with it — see NewClubFairTokenService.
+	   ============================================================ */
+	if clubFairTokens.IsEnabled() {
+		r.Route("/clubfair", func(r chi.Router) {
+			r.Route("/auth", func(r chi.Router) {
+				// bcrypt at cost 10 is ~80ms of CPU per call, and a fair means
+				// hundreds of students signing in within the same few minutes.
+				// Same throttle the WBW auth routes use: excess requests queue
+				// and are delayed rather than refused.
+				r.Use(middleware.ThrottleBacklog(
+					envInt("AUTH_THROTTLE_LIMIT", 40),
+					envInt("AUTH_THROTTLE_BACKLOG", 2000),
+					time.Duration(envInt("AUTH_THROTTLE_TIMEOUT_SEC", 25))*time.Second,
+				))
+				r.Post("/google", clubFairAuthHandler.SignInWithGoogle)
+				r.Post("/login", clubFairAuthHandler.SignInWithPassword)
+				r.Post("/register", clubFairAuthHandler.Register)
+			})
+
+			// The booth directory is the one open endpoint: it is the same public
+			// list for everyone, it carries no secret (PublicBooth has no such
+			// field), and a student deciding whether to come should not have to
+			// sign in to read it.
+			r.Get("/booths", boothHandler.GetAllBooths)
+			r.Get("/zones", clubFairFairHandler.ListZones)
+
+			r.Group(func(r chi.Router) {
+				r.Use(requireClubFair)
+
+				r.Get("/me", clubFairAuthHandler.Me)
+				r.Patch("/me", clubFairAuthHandler.UpdateMe)
+				r.Put("/me/password", clubFairAuthHandler.SetPassword)
+
+				r.Get("/progress", clubFairFairHandler.Progress)
+				r.Get("/checkins", clubFairFairHandler.ListCheckIns)
+				r.Post("/checkins", clubFairFairHandler.CreateCheckIn)
+
+				r.Route("/announcements", func(r chi.Router) {
+					// Authenticated even though the posts are the same for
+					// everyone: `mine` on each reaction chip is per-student.
+					r.Get("/", clubFairChannelHandler.List)
+					r.Post("/{id}/reactions", clubFairChannelHandler.React)
+
+					r.Group(func(r chi.Router) {
+						r.Use(requireClubFairStaff)
+						r.Post("/", clubFairChannelHandler.Post)
+						r.Delete("/{id}", clubFairChannelHandler.Delete)
+					})
+				})
+
+				r.Group(func(r chi.Router) {
+					r.Use(requireClubFairStaff)
+					// What the display at a booth polls. Staff-only because the
+					// code it returns is what mints a valid check-in.
+					r.Get("/booths/{id}/checkin-code", clubFairFairHandler.BoothCheckInCode)
+					// A prize is a physical object leaving a table.
+					r.Post("/prizes/claim", clubFairFairHandler.ClaimPrize)
+				})
+			})
+		})
+	} else {
+		slog.Warn("/clubfair routes are NOT registered — set CLUBFAIR_JWT_SECRET to enable them")
+	}
 
 	// SERVER_PORT is what .env sets; PORT is the convention most hosting
 	// platforms inject. Check ours first, then fall back to theirs.
