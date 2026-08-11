@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
 	"regexp"
 	"strings"
 	"su-server/internal/model"
@@ -42,7 +43,71 @@ var (
 	// than the generic 401 every Google verification failure lands on.
 	ErrClubFairNotMFU       = errors.New("clubfair: only MFU students are allowed")
 	ErrClubFairNameRequired = errors.New("clubfair: first name and surname are required")
+	// Also a policy error rather than an authentication one: the token verified,
+	// the address is MFU's, the student simply is not in an intake the fair is
+	// for. See eligibleIntake.
+	ErrClubFairIntakeNotEligible = errors.New("clubfair: student id is not in an eligible intake")
 )
+
+// The intake the fair is run for, as the leading digits of a student id.
+//
+// `6831503029` begins with the Buddhist-era year of entry, so "69" is the 2569
+// intake — this year's first-years, who the fair exists for. Read from
+// CLUBFAIR_INTAKE_PREFIXES rather than compiled in because the answer changes
+// every year and a redeploy is cheaper than a release; comma-separated to run a
+// fair for two intakes at once, and `*` to turn the rule off entirely.
+const defaultIntakePrefixes = "69"
+
+// intakePrefixes reads the env on every call.
+//
+// A package-level var initialised once would be marginally cheaper and could not
+// be exercised by a test with t.Setenv, which matters more: this is the one rule
+// here that decides whether a real student gets in, so it has to be testable.
+// The cost is a map lookup on a path that already does a network round trip to
+// Google and a bcrypt compare.
+func intakePrefixes() []string {
+	raw := strings.TrimSpace(os.Getenv("CLUBFAIR_INTAKE_PREFIXES"))
+	if raw == "" {
+		raw = defaultIntakePrefixes
+	}
+	if raw == "*" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// AllowedIntakeLabel is the configured intakes, for the handler's message.
+// A student told "you are not eligible" without being told what is eligible has
+// been given a dead end rather than an answer.
+func AllowedIntakeLabel() string {
+	return strings.Join(intakePrefixes(), ", ")
+}
+
+// eligibleIntake reports whether a student id may open a NEW account.
+//
+// Deliberately not consulted for an account that already exists — see
+// SignInWithGoogle. The rule is about who the fair is for, and applying it to
+// every sign-in would lock out staff, admins and anyone who registered before
+// it existed, on their next login, with no way back in.
+func eligibleIntake(studentID string) bool {
+	prefixes := intakePrefixes()
+	if len(prefixes) == 0 {
+		return true
+	}
+	id := strings.TrimSpace(studentID)
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(id, prefix) {
+			return true
+		}
+	}
+	return false
+}
 
 // Thai mobile numbers, stored in the national 0XXXXXXXXX form. Mirrors the
 // client's own rule so a number accepted on the form is accepted here.
@@ -130,6 +195,20 @@ func (s *ClubFairAuthService) SignInWithGoogle(ctx context.Context, idToken stri
 	identity, err := VerifyGoogleIdentity(ctx, idToken)
 	if err != nil {
 		return nil, err
+	}
+
+	// The intake rule applies to the account this sign-in would CREATE, not to
+	// the person signing in. UpsertGoogleIdentity inserts on a first sign-in, so
+	// "is there a row for this address already" is exactly the question — and
+	// asking it here rather than inside the upsert keeps existing students,
+	// staff and admins signing in untouched however the rule is configured.
+	if _, err := s.repo.FindByEmail(ctx, identity.Email); err != nil {
+		if !errors.Is(err, repository.ErrClubFairUserNotFound) {
+			return nil, err
+		}
+		if !eligibleIntake(identity.StudentID) {
+			return nil, ErrClubFairIntakeNotEligible
+		}
 	}
 
 	// Google gives the two name parts separately for Workspace accounts. Falling
@@ -241,6 +320,12 @@ func (s *ClubFairAuthService) RegisterWithPassword(
 	// mismatch between the two.
 	if studentID == "" {
 		studentID, _, _ = strings.Cut(email, "@")
+	}
+
+	// Unconditional here, unlike the Google path: this endpoint only ever
+	// creates an account, so there is no existing row to grandfather in.
+	if !eligibleIntake(studentID) {
+		return nil, ErrClubFairIntakeNotEligible
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), clubFairBcryptCost)

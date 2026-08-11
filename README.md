@@ -237,6 +237,7 @@ make dev
 | `CLUBFAIR_JWT_SECRET` | **Separate** Club Fair signing key. Unset = `/clubfair` routes not registered | |
 | `CLUBFAIR_CHECKIN_MAX_AGE_SECONDS` | How old a booth code may be. This is also the shared-screenshot window | `180` |
 | `GOOGLE_ALLOWED_AUDIENCES` | Extra accepted OAuth client ids, comma-separated, for the Android and iOS clients | |
+| `CLUBFAIR_INTAKE_PREFIXES` | Which intakes may **open a new account**, as the leading digits of a student id — `69` is the 2569 entry. Comma-separated for two intakes, `*` to accept any. An account that already exists signs in regardless, so staff and earlier students are never locked out | `69` |
 
 ### Makefile Commands
 

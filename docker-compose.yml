@@ -68,6 +68,18 @@ services:
     # publishes it unencrypted on every interface.
     ports:
       - "127.0.0.1:8080:8080"
+    # Resolvers the container can actually reach.
+    #
+    # Without this the backend inherits the host's /etc/resolv.conf, whose first
+    # entry is a LAN/VPN resolver that does not answer for the docker bridge.
+    # Docker's embedded resolver forwards to it and waits, so every outbound
+    # hostname lookup times out — which broke Google sign-in and nothing else,
+    # because verifying an ID token is the only thing this server resolves by
+    # name. It failed as "context canceled" after 15s, the app's read timeout,
+    # which reads like a Google problem and is a DNS one.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     env_file:
       - .env
     environment:

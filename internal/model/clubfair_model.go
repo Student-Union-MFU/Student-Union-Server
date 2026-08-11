@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ClubFairUser is a row of clubfair_users.
 //
@@ -39,6 +42,23 @@ func (u ClubFairUser) HasPassword() bool {
 	return u.PasswordHash != nil && *u.PasswordHash != ""
 }
 
+// ProfileComplete reports whether sign-up actually finished.
+//
+// A Google sign-in creates the row — see UpsertGoogleIdentity — so "the account
+// exists" is not the same question as "the student has finished signing up".
+// Everything below is asked for on the sign-up form and cannot come from Google:
+// a password (so the account has a second way in), a phone number (which is what
+// the password login takes), and the school and major.
+//
+// Computed here rather than in the client so the rule has one home. The app
+// gates on the flag; it does not re-derive it from which fields came back null.
+func (u ClubFairUser) ProfileComplete() bool {
+	return u.HasPassword() &&
+		filled(u.Phone) && filled(u.School) && filled(u.Major)
+}
+
+func filled(s *string) bool { return s != nil && strings.TrimSpace(*s) != "" }
+
 // PublicClubFairUser is what the API returns for "who am I".
 //
 // No password field at all, following PublicBooth: the hash cannot escape by
@@ -60,6 +80,11 @@ type PublicClubFairUser struct {
 	// Whether this account has a password set. The app needs to know so it can
 	// prompt a Google-only student to add one, without being told the hash.
 	HasPassword bool `json:"has_password"`
+
+	// False while a Google sign-in has created the account but sign-up has not
+	// been finished — see [ClubFairUser.ProfileComplete]. The app sends such a
+	// student to the sign-up form instead of the fair.
+	ProfileComplete bool `json:"profile_complete"`
 }
 
 func NewPublicClubFairUser(u ClubFairUser) PublicClubFairUser {
@@ -75,6 +100,8 @@ func NewPublicClubFairUser(u ClubFairUser) PublicClubFairUser {
 		Major:       u.Major,
 		AvatarURL:   u.AvatarURL,
 		HasPassword: u.HasPassword(),
+
+		ProfileComplete: u.ProfileComplete(),
 	}
 }
 

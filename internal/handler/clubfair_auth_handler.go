@@ -55,6 +55,14 @@ func authError(w http.ResponseWriter, err error) {
 		// can act on it.
 		appmw.WriteError(w, http.StatusForbidden, "ใช้ได้เฉพาะอีเมล @lamduan.mfu.ac.th")
 
+	case errors.Is(err, service.ErrClubFairIntakeNotEligible):
+		// 403 for the same reason as the rule above it: the credentials are
+		// fine, the account is not one this fair is for. The allowed intake is
+		// named rather than implied — "not eligible" with no rule attached is a
+		// dead end for a student standing at the registration desk.
+		appmw.WriteError(w, http.StatusForbidden,
+			"งานนี้เปิดให้เฉพาะนักศึกษารหัสขึ้นต้น "+service.AllowedIntakeLabel())
+
 	case errors.Is(err, service.ErrClubFairNameRequired):
 		appmw.WriteError(w, http.StatusBadRequest, "ต้องกรอกชื่อและนามสกุล")
 
