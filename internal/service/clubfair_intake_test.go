@@ -7,14 +7,19 @@ import "testing"
 // either direction is expensive: too strict locks out the students the fair is
 // for, too loose lets in everyone it is not.
 
-func TestEligibleIntakeDefaultsTo69(t *testing.T) {
+func TestEligibleIntakeDefaultsToTheThreeYearsOnCampus(t *testing.T) {
 	t.Setenv("CLUBFAIR_INTAKE_PREFIXES", "")
 
-	if !eligibleIntake("6931503029") {
-		t.Error("a 69 id must be eligible with no configuration set")
+	for _, id := range []string{"6731503029", "6831503029", "6931503029"} {
+		if !eligibleIntake(id) {
+			t.Errorf("%s should be eligible with no configuration set", id)
+		}
 	}
-	if eligibleIntake("6831503029") {
-		t.Error("a 68 id must not open a new account by default")
+	// Either side of the window: 66 has graduated, 70 has not arrived.
+	for _, id := range []string{"6631503029", "7031503029"} {
+		if eligibleIntake(id) {
+			t.Errorf("%s is outside the default intakes", id)
+		}
 	}
 }
 

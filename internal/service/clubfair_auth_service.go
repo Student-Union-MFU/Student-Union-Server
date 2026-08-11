@@ -49,14 +49,18 @@ var (
 	ErrClubFairIntakeNotEligible = errors.New("clubfair: student id is not in an eligible intake")
 )
 
-// The intake the fair is run for, as the leading digits of a student id.
+// The intakes the fair is run for, as the leading digits of a student id.
 //
 // `6831503029` begins with the Buddhist-era year of entry, so "69" is the 2569
-// intake — this year's first-years, who the fair exists for. Read from
-// CLUBFAIR_INTAKE_PREFIXES rather than compiled in because the answer changes
-// every year and a redeploy is cheaper than a release; comma-separated to run a
-// fair for two intakes at once, and `*` to turn the rule off entirely.
-const defaultIntakePrefixes = "69"
+// intake. It was 69 alone on the theory that a club fair is for first-years;
+// in practice the years above them come too, and turning a second-year away at
+// the door of an event they are standing outside is the wrong failure. 67-69
+// is the three intakes currently on campus for a four-year degree.
+//
+// Read from CLUBFAIR_INTAKE_PREFIXES rather than compiled in because the answer
+// changes every year and a redeploy is cheaper than a release; comma-separated,
+// and `*` to turn the rule off entirely.
+const defaultIntakePrefixes = "67,68,69"
 
 // intakePrefixes reads the env on every call.
 //
