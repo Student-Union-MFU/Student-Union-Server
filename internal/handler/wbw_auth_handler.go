@@ -38,6 +38,10 @@ func (h *WBWAuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 			middleware.WriteError(w, http.StatusBadRequest, "กิจกรรมนี้เปิดรับเฉพาะผู้ไม่มีโรคประจำตัว")
 		case errors.Is(err, service.ErrDuplicateUser):
 			middleware.WriteError(w, http.StatusConflict, "รหัสนักศึกษานี้สมัครไปแล้ว")
+		case errors.Is(err, service.ErrEventFull):
+			// 409 เหมือนกรณีสมัครซ้ำ — เป็นเรื่องสถานะของข้อมูล ไม่ใช่เซิร์ฟเวอร์มีปัญหา
+			// (503 จะทำให้ client/CDN เข้าใจว่าลองใหม่แล้วจะได้ ซึ่งไม่จริง)
+			middleware.WriteError(w, http.StatusConflict, "ที่นั่งเต็มแล้ว — ปิดรับสมัคร")
 		default:
 			slog.Error("wbw register failed", "err", err)
 			middleware.WriteError(w, http.StatusInternalServerError, "สมัครไม่สำเร็จ")
@@ -100,4 +104,18 @@ func (h *WBWAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	middleware.WriteJSON(w, http.StatusOK, res)
+}
+
+// Capacity — GET /wbw/capacity · เปิดสาธารณะ หน้าสมัครเรียกก่อนแสดงฟอร์ม
+//
+// ตั้งใจไม่เอาไว้ใต้ /wbw/auth เพราะกลุ่มนั้นมี ThrottleBacklog (40 พร้อมกัน คิว 25 วิ)
+// ไว้กัน bcrypt เผา CPU · endpoint นี้อ่านแถวเดียว ไม่ควรไปแย่งคิวกับการสมัครจริง
+func (h *WBWAuthHandler) Capacity(w http.ResponseWriter, r *http.Request) {
+	c, err := h.service.Capacity(r.Context())
+	if err != nil {
+		slog.Error("wbw capacity failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "อ่านจำนวนที่นั่งไม่สำเร็จ")
+		return
+	}
+	middleware.WriteJSON(w, http.StatusOK, c)
 }

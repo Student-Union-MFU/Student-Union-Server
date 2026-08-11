@@ -313,6 +313,10 @@ func main() {
 			r.Post("/staff-register", wbwAuthHandler.RegisterStaff)
 		})
 
+		// จำนวนที่นั่งคงเหลือ — เปิดสาธารณะ หน้าสมัครเรียกก่อนให้กรอกฟอร์ม
+		// อยู่นอกกลุ่ม /auth ตั้งใจ: ไม่ต้องไปเข้าคิว throttle ของ bcrypt เพราะอ่านแถวเดียว
+		r.Get("/capacity", wbwAuthHandler.Capacity)
+
 		r.Route("/admin", func(r chi.Router) {
 			// หน้าสมัครเรียกก่อนล็อกอิน — ต้องเปิดสาธารณะ (ตรงกับของเดิม)
 			r.Get("/schools", wbwAdminHandler.ListSchools)
@@ -524,7 +528,23 @@ func main() {
 
 	slog.Info("Server running :", "port", serverPort)
 
-	if err := http.ListenAndServe(":"+serverPort, r); err != nil {
+	// http.ListenAndServe เปล่า ๆ ไม่มี timeout สักตัว — connection ที่เปิดค้างไว้
+	// (เน็ตมือถือหลุดกลางคัน หรือคนยิงมั่ว ๆ) จะกองอยู่จนหมด fd ของเครื่อง
+	// ตั้ง server เองเพื่อกำหนดขอบเวลาให้ครบ
+	srv := &http.Server{
+		Addr:    ":" + serverPort,
+		Handler: r,
+		// กัน slowloris: ส่ง header ไม่จบใน 10 วิ ตัดทิ้ง
+		ReadHeaderTimeout: 10 * time.Second,
+		// ฟอร์มสมัครเป็น JSON ก้อนเล็ก 30 วิเหลือเฟือแม้เน็ตช้า
+		ReadTimeout: 30 * time.Second,
+		// ⚠ ห้ามตั้ง WriteTimeout: แชท/แจ้งเตือน/SOS เป็น long-poll ค้างได้ถึง 25 วิ
+		// (maxWaitSeconds ใน wbw_chat_service.go) ถ้าตั้งสั้นกว่านั้น long-poll จะถูกตัดกลางคัน
+		// ตัวคุมจริงคือ ReadTimeout + IdleTimeout ข้างบน/ข้างล่าง
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MB
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("SERVER RUN FAILED", "err", err)
 	}
 }

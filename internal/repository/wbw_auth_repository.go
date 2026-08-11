@@ -14,6 +14,19 @@ import (
 // ErrDuplicate = PG 23505 (unique violation)
 var ErrDuplicate = errors.New("duplicate")
 
+// ErrFull = ที่นั่งเต็ม — CHECK taken_within_max บน wbw_capacity ไม่ผ่าน (PG 23514)
+// ดู db/migrations/000021_wbw_capacity.up.sql
+var ErrFull = errors.New("capacity full")
+
+// capacityConstraint — ชื่อ constraint ที่บอกว่า "เต็ม" · เช็คชื่อด้วย ไม่ใช่ดูแค่รหัส 23514
+// เพราะ CHECK ตัวอื่นบนตารางอื่นก็คืนรหัสเดียวกัน แต่แปลว่าคนละเรื่อง
+const capacityConstraint = "taken_within_max"
+
+func isCapacityFull(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == capacityConstraint
+}
+
 // IsPGCode ช่วยเช็ค SQLSTATE เช่น "23505" (unique) "23503" (fk) "22P02" (invalid text repr)
 func IsPGCode(err error, code string) bool {
 	var pgErr *pgconn.PgError
@@ -56,6 +69,11 @@ func (r *WBWAuthRepository) Register(
 	if err != nil {
 		if IsPGCode(err, "23505") {
 			return nil, ErrDuplicate
+		}
+		// trigger trg_participant_count เพิ่ม wbw_capacity.taken ตอน INSERT นี้ —
+		// ถ้าเต็มแล้ว CHECK จะพังตรงนี้ ทั้ง transaction ถูก rollback จึงไม่มีเศษข้อมูลค้าง
+		if isCapacityFull(err) {
+			return nil, ErrFull
 		}
 		return nil, err
 	}
@@ -111,6 +129,21 @@ func (r *WBWAuthRepository) Register(
 		return nil, err
 	}
 	return &user, nil
+}
+
+// Capacity อ่านโควตาทั้งงาน — หน้าสมัครเรียกก่อนให้กรอกฟอร์ม จะได้ไม่ปล่อยให้กรอกจนจบ
+// แล้วค่อยบอกว่าเต็ม · อ่านแถวเดียว ไม่ได้ count ทั้งตาราง
+func (r *WBWAuthRepository) Capacity(ctx context.Context) (*model.Capacity, error) {
+	var c model.Capacity
+	err := r.db.QueryRow(ctx,
+		`SELECT max_participants, taken, GREATEST(max_participants - taken, 0)
+		 FROM wbw_capacity WHERE id`,
+	).Scan(&c.Max, &c.Taken, &c.SeatsLeft)
+	if err != nil {
+		return nil, err
+	}
+	c.Full = c.SeatsLeft == 0
+	return &c, nil
 }
 
 // FindByUsername คืน user + hash + status สำหรับตรวจรหัสผ่านและ gate การอนุมัติ
