@@ -22,6 +22,8 @@ var (
 	ErrMissingFields   = errors.New("missing fields")
 	ErrPendingApproval = errors.New("pending approval")
 	ErrBadStaffRole    = errors.New("bad staff role")
+	// ที่นั่งเต็ม — โควตาผู้เข้าร่วมทั้งงาน (staff/admin ไม่นับ) ดู migration 000021
+	ErrEventFull = errors.New("event full")
 )
 
 // หน้าที่ของเจ้าหน้าที่ — ต้องตรงกับ enum staff_role ใน DB (migration 000009)
@@ -91,6 +93,9 @@ func (s *WBWAuthService) Register(ctx context.Context, req model.RegisterRequest
 		if errors.Is(err, repository.ErrDuplicate) {
 			return nil, ErrDuplicateUser
 		}
+		if errors.Is(err, repository.ErrFull) {
+			return nil, ErrEventFull
+		}
 		return nil, err
 	}
 
@@ -134,6 +139,11 @@ func (s *WBWAuthService) RegisterStaff(ctx context.Context, req model.StaffRegis
 		return nil, err
 	}
 	return user, nil
+}
+
+// Capacity — สถานะที่นั่งของงาน สำหรับหน้าสมัคร (เปิดสาธารณะ ไม่ต้องล็อกอิน)
+func (s *WBWAuthService) Capacity(ctx context.Context) (*model.Capacity, error) {
+	return s.repo.Capacity(ctx)
 }
 
 func (s *WBWAuthService) Login(ctx context.Context, req model.LoginRequest) (*model.AuthResponse, error) {

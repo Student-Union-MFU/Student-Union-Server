@@ -459,3 +459,14 @@ type AdminFeedbackResponse struct {
 	Items   []AdminFeedbackRow `json:"items"`
 	Summary []FeedbackSummary  `json:"summary"`
 }
+
+/* ---------- โควตาผู้เข้าร่วมทั้งงาน ---------- */
+
+// Capacity — สถานะที่นั่งของงาน (นับเฉพาะ role = 'participant' · staff/admin ไม่นับ)
+// ที่มาของตัวเลขคือตาราง wbw_capacity ที่ trigger ดูแลให้ตรงกับ wbw_user เสมอ
+type Capacity struct {
+	Max       int  `json:"max"`
+	Taken     int  `json:"taken"`
+	SeatsLeft int  `json:"seats_left"`
+	Full      bool `json:"full"`
+}
