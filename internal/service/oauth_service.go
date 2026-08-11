@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 	"su-server/internal/model"
@@ -15,7 +14,9 @@ import (
 
 // The Google Workspace domain every account must belong to. Named once so the
 // email-suffix check and the hosted-domain check cannot drift apart.
-const mfuDomain = "lamduan.mfu.ac.th"
+// Kept as an alias: MFUDomain in google_identity.go is now the single
+// definition, and ExchangeCode below still reads this name.
+const mfuDomain = MFUDomain
 
 // isTrue reads a JSON value that may be either `true` or the string "true".
 // Google's tokeninfo endpoint returns the latter; a locally-verified ID token
@@ -30,15 +31,15 @@ func isTrue(raw json.RawMessage) bool {
 }
 
 type OAuthService struct {
-	userService  *UserService
-	oauthConfig  *oauth2.Config
+	userService *UserService
+	oauthConfig *oauth2.Config
 }
 
 type GoogleUserInfo struct {
-	Sub        string `json:"sub"`
-	Name       string `json:"name"`
-	Email      string `json:"email"`
-	Picture    string `json:"picture"`
+	Sub     string `json:"sub"`
+	Name    string `json:"name"`
+	Email   string `json:"email"`
+	Picture string `json:"picture"`
 }
 
 func NewOAuthService(userService *UserService) *OAuthService {
@@ -103,87 +104,30 @@ func (s *OAuthService) ExchangeCode(ctx context.Context, code string) (*model.Us
 	return user, nil
 }
 
-// VerifyIDToken verifies a Google ID token from Flutter mobile
+// VerifyIDToken verifies a Google ID token from a mobile client and upserts
+// the matching `users` row.
+//
+// The verification itself moved to VerifyGoogleIdentity, which Club Fair's auth
+// also calls. That is deliberate: the checks are the security boundary for both
+// apps, and two copies of them means one copy eventually misses a fix. What
+// stays here is the only part that is specific to this table — turning a
+// verified identity into a `users` row.
 func (s *OAuthService) VerifyIDToken(ctx context.Context, idToken string) (*model.User, error) {
-	// fetch Google's public keys and verify token
-	resp, err := http.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + idToken)
+	identity, err := VerifyGoogleIdentity(ctx, idToken)
 	if err != nil {
-		return nil, fmt.Errorf("failed to verify token: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("invalid token")
+		return nil, err
 	}
 
-	// Every field here is already inside the ID token — reading more of them
-	// costs no extra OAuth scope and does not change what the user is asked to
-	// consent to.
-	var info struct {
-		Sub     string `json:"sub"`
-		Email   string `json:"email"`
-		Name    string `json:"name"`
-		Picture string `json:"picture"`
-		Aud     string `json:"aud"`
-
-		// tokeninfo renders booleans as the strings "true"/"false", while a
-		// locally-parsed ID token carries a real bool. RawMessage accepts both
-		// so this keeps working if the verification method ever changes.
-		EmailVerified json.RawMessage `json:"email_verified"`
-		// Google Workspace hosted domain. Absent on consumer accounts, which is
-		// what makes it a stronger signal than the email suffix: the suffix is
-		// just text in a claim, while hd states that Google itself considers
-		// this account to belong to the domain.
-		HD string `json:"hd"`
-
-		GivenName  string `json:"given_name"`
-		FamilyName string `json:"family_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, fmt.Errorf("failed to decode token info: %w", err)
-	}
-
-	// verify the token was issued for your app
-	if info.Aud != os.Getenv("GOOGLE_CLIENT_ID") {
-		return nil, fmt.Errorf("token audience mismatch")
-	}
-
-	// An unverified address can be set to anything, so the domain check below
-	// would be meaningless without this.
-	if !isTrue(info.EmailVerified) {
-		return nil, fmt.Errorf("email address is not verified")
-	}
-
-	// validate MFU domain
-	if !strings.HasSuffix(info.Email, "@"+mfuDomain) {
-		return nil, fmt.Errorf("only MFU students are allowed")
-	}
-
-	// When Google tells us which domain owns the account, hold it to that.
-	// Empty means a consumer account, which the suffix check above has already
-	// rejected — so this only ever tightens, never locks out an account the
-	// previous rule allowed.
-	if info.HD != "" && info.HD != mfuDomain {
-		return nil, fmt.Errorf("only MFU students are allowed")
-	}
-
-	studentID, _, _ := strings.Cut(info.Email, "@")
-
-	// `name` is populated for Workspace accounts, but it is not guaranteed —
-	// a profile with only the two parts set leaves it empty, and an empty
-	// display name is worse than a rebuilt one.
-	displayName := info.Name
-	if displayName == "" {
-		displayName = strings.TrimSpace(info.GivenName + " " + info.FamilyName)
-	}
+	studentID := identity.StudentID
+	picture := identity.Picture
 
 	user, err := s.userService.UpsertUser(ctx, model.User{
 		UserType:     model.UserTypeStudent,
-		Name:         displayName,
-		Email:        info.Email,
-		AvatarURL:    &info.Picture,
+		Name:         identity.DisplayName(),
+		Email:        identity.Email,
+		AvatarURL:    &picture,
 		StudentID:    &studentID,
-		OAuthSubject: info.Sub,
+		OAuthSubject: identity.Sub,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert user: %w", err)
