@@ -287,9 +287,14 @@ func main() {
 	clubFairChannelService := service.NewClubFairChannelService(clubFairChannelRepo)
 	clubFairChannelHandler := handler.NewClubFairChannelHandler(clubFairChannelService)
 
+	clubFairAdminRepo := repository.NewClubFairAdminRepository(pool)
+	clubFairAdminService := service.NewClubFairAdminService(clubFairAdminRepo)
+	clubFairAdminHandler := handler.NewClubFairAdminHandler(clubFairAdminService)
+
 	requireClubFair := appmw.RequireClubFairAuth(clubFairTokens)
 	requireClubFairStaff := appmw.RequireClubFairRole(
 		appmw.ClubFairRoleStaff, appmw.ClubFairRoleAdmin)
+	requireClubFairAdmin := appmw.RequireClubFairRole(appmw.ClubFairRoleAdmin)
 
 	/* ============================================================
 	   WBW routes — เว็บ web-next proxy /api/* มาที่นี่
@@ -509,6 +514,14 @@ func main() {
 					r.Get("/booths/{id}/checkin-code", clubFairFairHandler.BoothCheckInCode)
 					// A prize is a physical object leaving a table.
 					r.Post("/prizes/claim", clubFairFairHandler.ClaimPrize)
+				})
+
+				// Admin console, same shape as /wbw/admin. Admin-only — the
+				// first route that uses the role, which until now was only
+				// folded into the staff group.
+				r.Route("/admin", func(r chi.Router) {
+					r.Use(requireClubFairAdmin)
+					r.Get("/dashboard", clubFairAdminHandler.Dashboard)
 				})
 			})
 		})
