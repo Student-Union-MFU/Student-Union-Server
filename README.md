@@ -105,6 +105,7 @@ Registered under `/clubfair` only when `CLUBFAIR_JWT_SECRET` is set — see
 | `DELETE` | `/clubfair/announcements/{id}` | **staff** | Soft delete |
 | `GET` | `/clubfair/booths/{id}/checkin-code` | **staff** | The booth display polls this for its current rotating code |
 | `POST` | `/clubfair/prizes/claim` | **staff** | Hand a prize over. Threshold re-checked server-side |
+| `GET` | `/clubfair/dashboard` | — | The admin console page (HTML). An empty shell — the numbers come from the endpoint below |
 | `GET` | `/clubfair/admin/dashboard` | **admin** | The fair at a glance: students, total check-ins, prizes claimed, full sweeps |
 
 `POST /clubfair/checkins` takes `{payload, client_id, device_time}` and answers

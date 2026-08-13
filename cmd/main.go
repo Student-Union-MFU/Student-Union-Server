@@ -483,6 +483,11 @@ func main() {
 			r.Get("/booths", boothHandler.GetAllBooths)
 			r.Get("/zones", clubFairFairHandler.ListZones)
 
+			// The admin console page. Public like /booths — it is an empty
+			// shell; every number on it comes from /clubfair/admin/dashboard,
+			// which is where the admin gate lives.
+			r.Get("/dashboard", clubFairAdminHandler.DashboardPage)
+
 			r.Group(func(r chi.Router) {
 				r.Use(requireClubFair)
 

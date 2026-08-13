@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Club Fair — Dashboard</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --ink: #1a1d21;
+    --ink-2: #5b6472;
+    --line: #e3e6ea;
+    --accent: #2456d6;
+    --danger: #b3261e;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171b;
+      --surface: #1e2329;
+      --ink: #e8eaed;
+      --ink-2: #9aa4b2;
+      --line: #2c333c;
+      --accent: #7da2ff;
+      --danger: #ffb4ab;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: "Noto Sans Thai", "Sarabun", system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    min-height: 100vh;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
+
+  header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 20px;
+  }
+  h1 { font-size: 1.25rem; font-weight: 600; }
+  h1 small { color: var(--ink-2); font-weight: 400; font-size: .85rem; margin-left: 8px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+  }
+
+  /* ---- login ---- */
+  #login { max-width: 360px; margin: 10vh auto 0; }
+  #login h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: 16px; }
+  label { display: block; font-size: .85rem; color: var(--ink-2); margin: 12px 0 4px; }
+  input {
+    width: 100%; padding: 10px 12px; font: inherit;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--ink);
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  button {
+    font: inherit; border: 0; border-radius: 8px; cursor: pointer;
+    padding: 10px 16px; background: var(--accent); color: #fff; font-weight: 600;
+  }
+  @media (prefers-color-scheme: dark) { button { color: #10131a; } }
+  button:disabled { opacity: .55; cursor: default; }
+  #login button { width: 100%; margin-top: 18px; }
+  .btn-ghost {
+    background: transparent; color: var(--ink-2); font-weight: 400;
+    border: 1px solid var(--line); padding: 6px 12px; font-size: .85rem;
+  }
+  .error { color: var(--danger); font-size: .85rem; margin-top: 12px; min-height: 1.2em; }
+
+  /* ---- dashboard ---- */
+  #dash { display: none; }
+  .tiles {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+  .tile { padding: 18px 20px; }
+  .tile .label { font-size: .85rem; color: var(--ink-2); }
+  .tile .value {
+    font-size: 2.4rem; font-weight: 600; line-height: 1.25; margin-top: 4px;
+  }
+  .meta {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    color: var(--ink-2); font-size: .8rem; margin-top: 16px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Club Fair <small>แดชบอร์ดผู้ดูแล</small></h1>
+    <div id="who" style="display:none; align-items:center; gap:10px;">
+      <span id="whoName" style="color:var(--ink-2); font-size:.85rem;"></span>
+      <button class="btn-ghost" id="logoutBtn" type="button">ออกจากระบบ</button>
+    </div>
+  </header>
+
+  <section id="login" class="card">
+    <h2>เข้าสู่ระบบ (เฉพาะแอดมิน)</h2>
+    <form id="loginForm">
+      <label for="phone">เบอร์โทรศัพท์</label>
+      <input id="phone" name="phone" autocomplete="username" inputmode="tel" required>
+      <label for="password">รหัสผ่าน</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit" id="loginBtn">เข้าสู่ระบบ</button>
+      <p class="error" id="loginError"></p>
+    </form>
+  </section>
+
+  <section id="dash">
+    <div class="tiles">
+      <div class="card tile"><div class="label">นักศึกษาที่ลงทะเบียน</div><div class="value" id="students">—</div></div>
+      <div class="card tile"><div class="label">เช็คอินทั้งหมด</div><div class="value" id="total_checkins">—</div></div>
+      <div class="card tile"><div class="label">รางวัลที่รับแล้ว</div><div class="value" id="prizes_claimed">—</div></div>
+      <div class="card tile"><div class="label">เก็บครบทุกบูธ</div><div class="value" id="full_sweeps">—</div></div>
+    </div>
+    <div class="meta">
+      <span id="updatedAt"></span>
+      <button class="btn-ghost" id="refreshBtn" type="button">รีเฟรช</button>
+      <span class="error" id="dashError"></span>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const TOKEN_KEY = "clubfair_admin_token";
+  const NAME_KEY  = "clubfair_admin_name";
+  const REFRESH_MS = 30_000;
+  const $ = (id) => document.getElementById(id);
+  let timer = null;
+
+  const fmt = (n) => Number(n).toLocaleString("th-TH");
+
+  function show(view) {
+    $("login").style.display = view === "login" ? "" : "none";
+    $("dash").style.display  = view === "dash"  ? "block" : "none";
+    $("who").style.display   = view === "dash"  ? "flex"  : "none";
+    if (view === "login") { clearInterval(timer); timer = null; }
+  }
+
+  function signOut(msg) {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(NAME_KEY);
+    show("login");
+    $("loginError").textContent = msg || "";
+  }
+
+  async function loadStats() {
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (!token) return signOut();
+    let res;
+    try {
+      res = await fetch("/clubfair/admin/dashboard", {
+        headers: { Authorization: "Bearer " + token },
+      });
+    } catch {
+      $("dashError").textContent = "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้";
+      return;
+    }
+    if (res.status === 401) return signOut("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+    if (res.status === 403) return signOut("บัญชีนี้ไม่มีสิทธิ์แอดมิน");
+    if (!res.ok) {
+      $("dashError").textContent = "โหลดข้อมูลไม่สำเร็จ";
+      return;
+    }
+    const s = await res.json();
+    for (const key of ["students", "total_checkins", "prizes_claimed", "full_sweeps"]) {
+      $(key).textContent = fmt(s[key]);
+    }
+    $("dashError").textContent = "";
+    $("updatedAt").textContent =
+      "อัปเดตล่าสุด " + new Date().toLocaleTimeString("th-TH");
+  }
+
+  function enterDash() {
+    $("whoName").textContent = localStorage.getItem(NAME_KEY) || "";
+    show("dash");
+    loadStats();
+    clearInterval(timer);
+    timer = setInterval(loadStats, REFRESH_MS);
+  }
+
+  $("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("loginBtn");
+    btn.disabled = true;
+    $("loginError").textContent = "";
+    try {
+      const res = await fetch("/clubfair/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phone: $("phone").value.trim(),
+          password: $("password").value,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $("loginError").textContent = body.error || "เข้าสู่ระบบไม่สำเร็จ";
+        return;
+      }
+      if (body.user?.role !== "admin") {
+        $("loginError").textContent = "บัญชีนี้ไม่มีสิทธิ์แอดมิน";
+        return;
+      }
+      localStorage.setItem(TOKEN_KEY, body.token);
+      localStorage.setItem(NAME_KEY, body.user.first_name + " " + body.user.surname);
+      $("password").value = "";
+      enterDash();
+    } catch {
+      $("loginError").textContent = "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $("refreshBtn").addEventListener("click", loadStats);
+  $("logoutBtn").addEventListener("click", () => signOut());
+
+  if (localStorage.getItem(TOKEN_KEY)) enterDash();
+  else show("login");
+})();
+</script>
+</body>
+</html>
