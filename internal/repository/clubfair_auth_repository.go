@@ -112,6 +112,23 @@ func (r *ClubFairAuthRepository) SetPassword(ctx context.Context, id int, hash s
 	return err
 }
 
+// Delete removes the account. The ON DELETE CASCADE on clubfair_users(id) takes
+// the student's check-ins, announcement reactions and prize claims with it;
+// announcements they authored and prizes they issued survive with the author
+// and issuer nulled (ON DELETE SET NULL), so there is nothing to clean up here.
+// ErrClubFairUserNotFound when the row is already gone, so a stale token
+// deleting twice reads as a 404 rather than a silent success.
+func (r *ClubFairAuthRepository) Delete(ctx context.Context, id int) error {
+	tag, err := r.db.Exec(ctx, `DELETE FROM clubfair_users WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrClubFairUserNotFound
+	}
+	return nil
+}
+
 // UpdateProfile writes the fields the student owns. A nil argument leaves that
 // column alone, so a screen that edits one field cannot blank the others.
 func (r *ClubFairAuthRepository) UpdateProfile(

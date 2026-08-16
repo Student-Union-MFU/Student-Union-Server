@@ -369,6 +369,12 @@ func (s *ClubFairAuthService) GetByID(ctx context.Context, id int) (*model.ClubF
 	return s.repo.GetByID(ctx, id)
 }
 
+// Delete removes the authenticated student's own account. The cascade lives in
+// the schema, so there is nothing to unwind here.
+func (s *ClubFairAuthService) Delete(ctx context.Context, userID int) error {
+	return s.repo.Delete(ctx, userID)
+}
+
 // UpdateProfile writes the fields the student owns. A nil argument leaves that
 // column alone.
 func (s *ClubFairAuthService) UpdateProfile(

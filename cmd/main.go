@@ -494,6 +494,7 @@ func main() {
 				r.Get("/me", clubFairAuthHandler.Me)
 				r.Patch("/me", clubFairAuthHandler.UpdateMe)
 				r.Put("/me/password", clubFairAuthHandler.SetPassword)
+				r.Delete("/me", clubFairAuthHandler.DeleteMe)
 
 				r.Get("/progress", clubFairFairHandler.Progress)
 				r.Get("/checkins", clubFairFairHandler.ListCheckIns)
