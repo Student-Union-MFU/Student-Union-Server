@@ -178,6 +178,12 @@ func main() {
 		w.Write([]byte(`{"message": "SU Backend running"}`))
 	})
 
+	// Public legal pages for the App Store listing (privacy-policy URL and
+	// support URL). No auth, no service dependencies, registered outside the
+	// clubfair conditional so they stay up even without CLUBFAIR_JWT_SECRET.
+	r.Get("/privacy", handler.LegalPrivacyPage)
+	r.Get("/support", handler.LegalSupportPage)
+
 	r.Route("/su-server", func(r chi.Router) {
 		// Public: the only way to obtain a token, plus the reads another
 		// client is known to call. Closing those is a following round, once
