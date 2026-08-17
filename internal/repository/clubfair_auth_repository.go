@@ -6,12 +6,35 @@ import (
 	"su-server/internal/model"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ErrClubFairUserNotFound is returned instead of pgx.ErrNoRows so the service
 // layer can tell "no such account" from "the query broke" without importing pgx.
 var ErrClubFairUserNotFound = errors.New("clubfair: user not found")
+
+// ErrClubFairPhoneTaken is the unique index on clubfair_users.phone, named so
+// the handler can answer 409 instead of letting a raw pgconn error fall through
+// to the catch-all 401.
+var ErrClubFairPhoneTaken = errors.New("clubfair: that phone already has an account")
+
+// clubfair_users carries four UNIQUE columns — email, phone, student_id and
+// oauth_subject — and Postgres reports all four as 23505. Matching the
+// constraint name as well as the code is what keeps this from dressing an email
+// or student-id collision up as a phone one; anything else still travels up as
+// itself, which is a 500 the logs can be read on.
+const clubFairPhoneConstraint = "clubfair_users_phone_key"
+
+func translateClubFairPhoneConflict(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == clubFairPhoneConstraint {
+		return ErrClubFairPhoneTaken
+	}
+	return err
+}
 
 type ClubFairAuthRepository struct {
 	db *pgxpool.Pool
@@ -136,7 +159,7 @@ func (r *ClubFairAuthRepository) UpdateProfile(
 	id int,
 	phone, school, major *string,
 ) (*model.ClubFairUser, error) {
-	return scanClubFairUser(r.db.QueryRow(ctx,
+	user, err := scanClubFairUser(r.db.QueryRow(ctx,
 		`UPDATE clubfair_users SET
 		     phone      = COALESCE($2, phone),
 		     school     = COALESCE($3, school),
@@ -146,4 +169,8 @@ func (r *ClubFairAuthRepository) UpdateProfile(
 		 RETURNING `+clubFairUserColumns,
 		id, phone, school, major,
 	))
+	if err != nil {
+		return nil, translateClubFairPhoneConflict(err)
+	}
+	return user, nil
 }
