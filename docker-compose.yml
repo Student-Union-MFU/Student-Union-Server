@@ -48,7 +48,12 @@ services:
     command:
       - -path=/migrations
       - -database
-      - postgres://${DB_USER}:${DB_PASS}@database:5432/${DB_NAME}?sslmode=disable
+      # Same defaults as the `database` service below, and they have to stay the
+      # same three. Bare ${DB_USER} collapses to an empty string when unset, so a
+      # missing .env built `postgres://:@database:5432/?sslmode=disable` and
+      # migrate failed against a database that had meanwhile come up perfectly
+      # well under the defaults — the two halves disagreeing about who to be.
+      - postgres://${DB_USER:-admin}:${DB_PASS:-yion}@database:5432/${DB_NAME:-sudb}?sslmode=disable
       - up
     depends_on:
       database:
@@ -111,10 +116,32 @@ services:
     image: postgres:15-alpine
     container_name: postgres-db
     restart: always
+    # Read from .env, exactly like `migrate` and `backend` do.
+    #
+    # These were three hardcoded literals while the other two services took the
+    # same three values from ${DB_USER}/${DB_PASS}/${DB_NAME}. Whenever a .env
+    # disagreed, the database came up owned by `admin` and `migrate` then tried
+    # to sign in as whoever .env named — so migrate exited non-zero, and because
+    # `backend` waits on `service_completed_successfully`, nothing started at
+    # all. The failure names a role that does not exist, which reads like a
+    # Postgres problem rather than a compose one.
+    #
+    # Defaults, not the `${DB_USER:?}` form: `:?` aborts *every* compose command
+    # when the variable is unset, `down` included, which locks you out of
+    # stopping the stack — the same reason TUNNEL_TOKEN above avoids it. The
+    # defaults are the literals this file used before, so a machine with no .env
+    # behaves exactly as it always did.
+    #
+    # ⚠ POSTGRES_* are read ONLY when the data directory is first created. On a
+    # volume that already exists these are ignored, and the credentials baked in
+    # at init are the real ones forever. Changing DB_USER/DB_PASS in .env against
+    # a live `pgdata` therefore does NOT rename anything — it just points every
+    # client at a role the database has never heard of. Either keep .env matching
+    # what the volume was built with, or create the role by hand.
     environment:
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=yion
-      - POSTGRES_DB=sudb
+      - POSTGRES_USER=${DB_USER:-admin}
+      - POSTGRES_PASSWORD=${DB_PASS:-yion}
+      - POSTGRES_DB=${DB_NAME:-sudb}
     # Bound to 127.0.0.1 so `make dev` / `make migrate-up` still reach it from
     # the host, but it is NOT reachable from the internet. A bare "5432:5432"
     # would publish Postgres on every interface.
@@ -122,8 +149,11 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Same two values again — a healthcheck hardcoding `admin`/`sudb` against a
+    # database created as something else never turns healthy, and both dependent
+    # services wait on `service_healthy`, so the stack hangs with no error.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin -d sudb"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-admin} -d ${DB_NAME:-sudb}"]
       interval: 5s
       timeout: 5s
       retries: 5
