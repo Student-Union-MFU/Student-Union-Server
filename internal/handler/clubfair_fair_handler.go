@@ -122,20 +122,31 @@ func (h *ClubFairFairHandler) CreateCheckIn(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// GET /clubfair/booths/{id}/checkin-code — staff only.
+// GET /clubfair/booths/{id}/checkin-code — staff, admin, or the booth's owner.
 //
 // What the device at a booth polls to know what to display. The secret stays on
 // the server: a tablet left on a table at a fair is not somewhere to keep
 // something that mints valid check-ins for the rest of the event.
+//
+// A booth owner reaches only the booths assigned to them, checked in the service
+// against the token's own claims — see CurrentCode. The route's middleware
+// cannot do that job: it is a question about this booth and this user, not about
+// a role.
 func (h *ClubFairFairHandler) BoothCheckInCode(w http.ResponseWriter, r *http.Request) {
+	claims := appmw.ClubFairClaimsFrom(r.Context())
+
 	boothID, err := strconv.Atoi(chi.URLParam(r, "id"))
 	if err != nil || boothID <= 0 {
 		appmw.WriteError(w, http.StatusBadRequest, "รหัสบูธไม่ถูกต้อง")
 		return
 	}
 
-	code, err := h.checkIns.CurrentCode(r.Context(), boothID)
+	code, err := h.checkIns.CurrentCode(r.Context(), boothID, claims.UserID, claims.Role)
 	if err != nil {
+		if errors.Is(err, service.ErrBoothNotOwned) {
+			appmw.WriteError(w, http.StatusForbidden, "บูธนี้ไม่ได้อยู่ในความดูแลของคุณ")
+			return
+		}
 		if errors.Is(err, repository.ErrBoothNotFound) {
 			appmw.WriteError(w, http.StatusNotFound, "ไม่พบบูธนี้")
 			return

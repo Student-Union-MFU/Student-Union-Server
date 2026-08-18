@@ -37,6 +37,33 @@ direction.
 // The audience every Club Fair token carries and every Club Fair route demands.
 const ClubFairAudience = "clubfair"
 
+// The four roles, matching the CHECK on clubfair_users.role.
+//
+// Declared here rather than in `middleware` — which is where they were, and
+// where the middleware still exposes them under the same names — because the
+// admin service has to reason about roles too, and `middleware` imports this
+// package. Two copies of four strings is how a role check ends up comparing
+// against "Staff".
+const (
+	ClubFairRoleStudent = "student"
+	ClubFairRoleStaff   = "staff"
+	ClubFairRoleAdmin   = "admin"
+
+	// ClubFairRoleBoothOwner runs a booth's screen and nothing else.
+	//
+	// ⚠ It is deliberately NOT a kind of staff, and this list is not a
+	// hierarchy. `requireClubFairStaff` names staff and admin explicitly and
+	// does not admit this role: a booth owner cannot post an announcement, read
+	// the participant roster or hand out a prize. The only thing it reaches is
+	// `GET /booths/{id}/checkin-code`, and only for the booths assigned to it
+	// in clubfair_booth_owner. Migration 000024 has the full argument.
+	//
+	// Why it exists: before it, displaying a booth's QR needed a staff token,
+	// so a screen left on a booth's table for two days was also the
+	// announcements channel and the participant list.
+	ClubFairRoleBoothOwner = "booth_owner"
+)
+
 const clubFairTokenTTL = 30 * 24 * time.Hour
 
 // ErrClubFairTokensDisabled means CLUBFAIR_JWT_SECRET was not set, so this

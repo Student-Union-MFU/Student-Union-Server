@@ -176,3 +176,106 @@ type ClubFairProgress struct {
 
 	Prizes []ClubFairPrizeTier `json:"prizes"`
 }
+
+// PublicPrizeTier is a tier with nothing caller-specific on it.
+//
+// [ClubFairPrizeTier] carries `reached` and `claimed`, which only mean anything
+// against a particular student's stamps. Serving that shape on a public endpoint
+// would answer both as false for everyone — not absent, but *wrong*, and wrong
+// in the direction a reader would believe. Same reasoning as PublicBooth: the
+// field cannot be misread if the type does not have it.
+type PublicPrizeTier struct {
+	ID          int     `json:"id"`
+	Threshold   int     `json:"threshold"`
+	Name        string  `json:"name"`
+	Description *string `json:"description"`
+}
+
+// ClubFairInfo is the single row of clubfair_fair_info: when and where the fair
+// is.
+//
+// It exists so the dates stop being a constant in two clients that have to be
+// edited together — see migration 000023. `starts_at` and `ends_at` are instants;
+// every client formats them itself, because a date rendered on the server is a
+// date rendered in the server's locale.
+type ClubFairInfo struct {
+	StartsAt time.Time `json:"starts_at"`
+	EndsAt   time.Time `json:"ends_at"`
+
+	// Thai original, English translation, null falling back to Thai.
+	Venue    *string `json:"venue"`
+	VenueEN  *string `json:"venue_en"`
+	Notice   *string `json:"notice"`
+	NoticeEN *string `json:"notice_en"`
+
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ClubFairProgramEntry is one item in the running order.
+//
+// `EndsAt` is nullable because plenty of what happens at a fair has a start and
+// no announced finish, and inventing one puts a closing time on the page that
+// nobody promised.
+type ClubFairProgramEntry struct {
+	ID       int        `json:"id"`
+	StartsAt time.Time  `json:"starts_at"`
+	EndsAt   *time.Time `json:"ends_at"`
+
+	Title    string  `json:"title"`
+	TitleEN  *string `json:"title_en"`
+	Detail   *string `json:"detail"`
+	DetailEN *string `json:"detail_en"`
+
+	// Free text — most of these happen on a stage or at a doorway rather than in
+	// an area of the floor. `Zone` is the structured half, for the ones that do.
+	Location   *string `json:"location"`
+	LocationEN *string `json:"location_en"`
+	Zone       *string `json:"zone"`
+
+	// Drafts are invisible on the public endpoint. Staff see it so the dashboard
+	// can show what is not live yet.
+	IsPublished bool `json:"is_published"`
+}
+
+// ClubFairParticipant is a student as the staff dashboard sees them.
+//
+// Built the way PublicClubFairUser is: there is no password field to forget to
+// blank, and no `oauth_subject` — a stable cross-service identifier that a
+// roster screen has no use for. What is here is what someone at a prize table
+// needs to identify the person in front of them, plus the two things staff can
+// actually change.
+type ClubFairParticipant struct {
+	ID        int     `json:"id"`
+	FirstName string  `json:"first_name"`
+	Surname   string  `json:"surname"`
+	Email     string  `json:"email"`
+	StudentID *string `json:"student_id"`
+	Phone     *string `json:"phone"`
+	School    *string `json:"school"`
+	Major     *string `json:"major"`
+
+	Role      string `json:"role"`
+	IsFlagged bool   `json:"is_flagged"`
+
+	// How many booths they have collected. Joined in rather than fetched per
+	// row: a roster screen sorted by progress is the one view of this data that
+	// staff actually asked for, and 2,000 students is 2,000 extra queries.
+	Visited int `json:"visited"`
+
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ClubFairPrizeTierAdmin is a tier as the dashboard sees it.
+//
+// [PublicPrizeTier] plus the two things staff need before touching one: whether
+// it is retired, and how many students have already collected it. The second is
+// what makes the difference between a tier that can be deleted and one that
+// cannot — `clubfair_prize_claim.tier_id` is ON DELETE RESTRICT precisely so a
+// student holding a prize keeps a row that points somewhere, and a dashboard
+// that offered Delete without showing the count would be offering an action
+// that fails.
+type ClubFairPrizeTierAdmin struct {
+	PublicPrizeTier
+	IsActive bool `json:"is_active"`
+	Claims   int  `json:"claims"`
+}

@@ -17,10 +17,20 @@ type clubFairCtxKey string
 const clubFairClaimsKey clubFairCtxKey = "clubfair_claims"
 
 // Club Fair roles, matching the CHECK on clubfair_users.role.
+//
+// Aliases of the service package's own constants. They live over there because
+// the admin service needs them as well and this package imports that one, so
+// declaring them here and reading them there would be an import cycle. Kept
+// under these names because every route in cmd/main.go already spells them this
+// way.
 const (
-	ClubFairRoleStudent = "student"
-	ClubFairRoleStaff   = "staff"
-	ClubFairRoleAdmin   = "admin"
+	ClubFairRoleStudent = service.ClubFairRoleStudent
+	ClubFairRoleStaff   = service.ClubFairRoleStaff
+	ClubFairRoleAdmin   = service.ClubFairRoleAdmin
+	// ⚠ Not a kind of staff. Any route that means "may use the dashboard" lists
+	// staff and admin and must not gain this one — see the constant's own note
+	// in the service package.
+	ClubFairRoleBoothOwner = service.ClubFairRoleBoothOwner
 )
 
 // RequireClubFairAuth admits only a token minted by ClubFairTokenService.
