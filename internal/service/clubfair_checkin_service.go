@@ -94,6 +94,17 @@ func CheckInMaxAge() time.Duration {
 	return 3 * time.Minute
 }
 
+// maxAgeWindows is [CheckInMaxAge] expressed in windows — how many rotations
+// behind the current one a code may be and still verify.
+//
+// One definition, read by both Verify and CurrentCode. They have to agree
+// exactly: the first computes whether a code is refused and the second tells a
+// display when that will happen, and a booth screen whose idea of "still works"
+// is a window out from the server's is worse than one with no idea at all.
+func maxAgeWindows() int64 {
+	return int64(CheckInMaxAge().Seconds()) / int64(CheckInWindow.Seconds())
+}
+
 // How far ahead of the server a booth device's clock may be. One window, for
 // skew only — a code from the future is otherwise meaningless.
 const checkInFutureTolerance = 1
@@ -138,7 +149,32 @@ type BoothCheckInCode struct {
 	Code      string    `json:"code"`
 	Payload   string    `json:"payload"`
 	ExpiresAt time.Time `json:"expires_at"`
+
+	// AcceptedUntil is when this code stops verifying — the end of its window
+	// plus [CheckInMaxAge].
+	//
+	// Sent because it is the only one of the two instants a display can act on
+	// and the only one it cannot work out for itself. ExpiresAt says when to ask
+	// for the next code; this says when the one on screen becomes a lie. They
+	// are three minutes apart by default, and a booth screen that showed a code
+	// past this point would be inviting scans the server refuses.
+	//
+	// It is *computed from the server's own max age* rather than left for the
+	// client to add on, because that value is tunable per deployment
+	// (CLUBFAIR_CHECKIN_MAX_AGE_SECONDS). A client with its own copy of "180
+	// seconds" is a client that starts lying the day somebody changes it, and
+	// nothing would fail loudly enough to notice.
+	AcceptedUntil time.Time `json:"accepted_until"`
 }
+
+// ErrBoothNotOwned is a booth owner asking for a booth that is not theirs.
+//
+// Distinct from "not found", and the handler answers 403 rather than 404: the
+// booth exists and the caller is who they say they are, they simply do not run
+// it. Collapsing the two would hide a misassignment behind what reads as a
+// deleted booth — on setup day, when that difference is the whole of what the
+// person holding the tablet needs to know.
+var ErrBoothNotOwned = errors.New("clubfair: this booth is not assigned to you")
 
 // CurrentCode builds the payload for a booth's display.
 //
@@ -146,7 +182,43 @@ type BoothCheckInCode struct {
 // computing it locally, which is what keeps the key on one machine: a tablet left
 // on a table at a fair is not somewhere to store something that mints valid
 // check-ins for the rest of the event.
-func (s *ClubFairCheckInService) CurrentCode(ctx context.Context, boothID int) (*BoothCheckInCode, error) {
+//
+// ## Who may ask
+//
+// [userID] and [role] come off the caller's token, never off the request.
+//
+//   - **staff and admin** — any booth. They are the people walking the hall
+//     fixing screens, and a screen that has gone dark should be fixable by
+//     whoever reaches it rather than only by the volunteer assigned to it.
+//   - **booth_owner** — only the booths in clubfair_booth_owner. This is the
+//     entire authorisation the role carries: a booth's volunteers get a
+//     credential that displays their own code and reaches nothing else.
+//
+// **The role is tested as well as the assignment, and the assignment is the half
+// that can actually be revoked.** A role lives in a 30-day token this server
+// cannot recall, so a demoted account keeps presenting one that says
+// booth_owner; UpdateParticipant deletes its assignment rows for exactly that
+// reason, which is what makes the refusal land on the very next poll.
+func (s *ClubFairCheckInService) CurrentCode(
+	ctx context.Context, boothID, userID int, role string,
+) (*BoothCheckInCode, error) {
+	if role != ClubFairRoleStaff && role != ClubFairRoleAdmin {
+		if role != ClubFairRoleBoothOwner {
+			return nil, ErrBoothNotOwned
+		}
+		owns, err := s.repo.BoothOwnedBy(ctx, userID, boothID)
+		if err != nil {
+			return nil, err
+		}
+		if !owns {
+			return nil, ErrBoothNotOwned
+		}
+	}
+
+	// Read after the check, never before. This is the one column in the schema
+	// that must not leave the database for a caller with no business holding it,
+	// and fetching it first would mean an unauthorised request had already
+	// pulled a booth's key into memory before being refused.
 	secret, err := s.repo.BoothSecret(ctx, boothID)
 	if err != nil {
 		return nil, err
@@ -164,6 +236,13 @@ func (s *ClubFairCheckInService) CurrentCode(ctx context.Context, boothID int) (
 		// When this code stops being the current one, so the display knows when
 		// to ask again.
 		ExpiresAt: time.Unix((window+1)*int64(CheckInWindow.Seconds()), 0),
+		// And when it stops verifying. Verify admits a code while
+		// `current - window <= maxAgeWindows`, so the first instant it refuses
+		// one is the start of window `window + maxAgeWindows + 1`. Derived from
+		// the same expression Verify uses rather than restated, so the two
+		// cannot drift.
+		AcceptedUntil: time.Unix(
+			(window+maxAgeWindows()+1)*int64(CheckInWindow.Seconds()), 0),
 	}, nil
 }
 
@@ -217,11 +296,10 @@ func (s *ClubFairCheckInService) Verify(ctx context.Context, payload string) (bo
 	// Age is checked before the HMAC, so an ancient code costs a rejection
 	// rather than a database read for the secret.
 	current := windowAt(time.Now())
-	maxAgeWindows := int64(CheckInMaxAge().Seconds()) / int64(CheckInWindow.Seconds())
 	if scanned.Window > current+checkInFutureTolerance {
 		return 0, ErrCheckInCodeExpired
 	}
-	if current-scanned.Window > maxAgeWindows {
+	if current-scanned.Window > maxAgeWindows() {
 		return 0, ErrCheckInCodeExpired
 	}
 

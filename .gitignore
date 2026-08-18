@@ -18,3 +18,7 @@ secrets/*
 # ขยะของ Finder — โผล่ทุกโฟลเดอร์ที่เคยเปิดดูบน macOS ไม่ใช่แค่ราก
 # ไม่มีนำหน้า `/` จึงแมตช์ทุกชั้น (ตอนนี้มีทั้ง ./ และ internal/ แล้ว)
 .DS_Store
+
+# Per-machine compose override (LAN port bindings, local tweaks) — machine-specific
+# by definition and holds this box's addresses. The template above stays committed.
+docker-compose.override.yml

@@ -257,18 +257,33 @@ func splitDisplayName(name string) (first, last string) {
 	}
 }
 
-// SignInWithPassword matches on the phone number.
+// A student id: ten digits, the first two being the Buddhist-era year of entry.
 //
-// Deliberately answers the same error for "no such number" and "wrong password":
-// distinguishing them turns the endpoint into a way to test which phone numbers
-// have accounts.
-func (s *ClubFairAuthService) SignInWithPassword(ctx context.Context, phone, password string) (*ClubFairSession, error) {
-	normalised := NormalisePhone(phone)
-	if !thaiMobile.MatchString(normalised) {
-		return nil, ErrClubFairBadPhone
-	}
+// Matched on shape rather than on a prefix list, deliberately. The intake rule
+// (see eligibleIntake) decides who may *open* an account; this only decides how
+// to read what someone typed into one box, and applying the intake rule here
+// would lock out staff, admins and anyone who registered before it existed.
+var studentIDShape = regexp.MustCompile(`^\d{8,12}$`)
 
-	user, err := s.repo.FindByPhone(ctx, normalised)
+// SignInWithPassword matches on a phone number, a student id, or an email.
+//
+// One box, three things people know about themselves. It was phone-only, which
+// is what the sign-up form collects — but the identifier a student actually has
+// memorised is their student id, it is printed on the card in their pocket, and
+// it is what they type into every other university system.
+//
+// The student id needs no lookup of its own: for an MFU address the local part
+// *is* the student id, which is why RegisterWithPassword derives one from the
+// other. So `6831503029` is resolved to `6831503029@lamduan.mfu.ac.th` and found
+// by email, on the same unique index the Google path joins on.
+//
+// Deliberately answers the same error for "no such account" and "wrong
+// password". Distinguishing them turns this endpoint into a way to test which
+// student ids are registered, and a student id is guessable in a way a password
+// is not — the whole roster is a contiguous range of numbers.
+func (s *ClubFairAuthService) SignInWithPassword(ctx context.Context, identifier, password string) (*ClubFairSession, error) {
+	user, err := s.findByIdentifier(ctx, identifier)
+
 	if errors.Is(err, repository.ErrClubFairUserNotFound) {
 		// Compare against a dummy hash anyway, so a missing account and a wrong
 		// password take about the same time.
@@ -288,6 +303,36 @@ func (s *ClubFairAuthService) SignInWithPassword(ctx context.Context, phone, pas
 		return nil, ErrClubFairWrongPassword
 	}
 	return s.session(user)
+}
+
+// findByIdentifier reads what the caller typed and looks it up accordingly.
+//
+// The order matters. A phone number is checked first because it is the most
+// constrained shape — `^0[689]\d{8}$` — and a Thai mobile cannot be mistaken for
+// anything else here. A student id is the looser digit shape, so it has to come
+// second or `0624202483` would be read as a student id and never found.
+func (s *ClubFairAuthService) findByIdentifier(
+	ctx context.Context, identifier string,
+) (*model.ClubFairUser, error) {
+	trimmed := strings.TrimSpace(identifier)
+
+	if phone := NormalisePhone(trimmed); thaiMobile.MatchString(phone) {
+		return s.repo.FindByPhone(ctx, phone)
+	}
+
+	if strings.Contains(trimmed, "@") {
+		return s.repo.FindByEmail(ctx, strings.ToLower(trimmed))
+	}
+
+	if studentIDShape.MatchString(trimmed) {
+		return s.repo.FindByEmail(ctx, trimmed+"@"+MFUDomain)
+	}
+
+	// Not a shape this can look up. Reported as "no account" rather than as a
+	// format error, for the same reason the two failures above share a message:
+	// "that is not a valid student id" is a probe telling the caller which
+	// shapes exist.
+	return nil, repository.ErrClubFairUserNotFound
 }
 
 // A valid bcrypt hash of a value nothing will ever submit. Its only job is to

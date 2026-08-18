@@ -68,6 +68,22 @@ func (r *ClubFairFairRepository) BoothSecret(ctx context.Context, boothID int) (
 	return secret, err
 }
 
+// BoothOwnedBy is the membership test guarding a booth display's poll.
+//
+// It sits beside BoothSecret rather than with the dashboard's other ownership
+// queries on purpose: this is the check that decides whether the secret above
+// may be turned into a code, and the two belong on one path. The dashboard's
+// assignment reads and writes live in ClubFairAdminRepository, which is about
+// editing the mapping rather than enforcing it.
+func (r *ClubFairFairRepository) BoothOwnedBy(ctx context.Context, userID, boothID int) (bool, error) {
+	var owns bool
+	err := r.db.QueryRow(ctx,
+		`SELECT EXISTS (
+		     SELECT 1 FROM clubfair_booth_owner WHERE user_id = $1 AND booth_id = $2
+		 )`, userID, boothID).Scan(&owns)
+	return owns, err
+}
+
 func (r *ClubFairFairRepository) BoothExists(ctx context.Context, boothID int) (bool, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx,

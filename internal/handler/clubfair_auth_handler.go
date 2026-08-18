@@ -29,8 +29,15 @@ func authError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrClubFairNoAccount),
 		errors.Is(err, service.ErrClubFairWrongPassword):
 		// One message for both. Distinguishing them turns this endpoint into a
-		// way to discover which phone numbers have accounts.
-		appmw.WriteError(w, http.StatusUnauthorized, "เบอร์โทรหรือรหัสผ่านไม่ถูกต้อง")
+		// way to discover which accounts exist — and now that a student id is
+		// accepted, that matters more than it did: a phone number is hard to
+		// guess, and the student id roster is a contiguous range of numbers.
+		//
+		// Names all three identifiers the endpoint takes, because a message that
+		// says only "phone" reads as "you used the wrong field" to someone who
+		// typed their student id correctly.
+		appmw.WriteError(w, http.StatusUnauthorized,
+			"รหัสนักศึกษา เบอร์โทร หรือรหัสผ่านไม่ถูกต้อง")
 
 	case errors.Is(err, service.ErrClubFairNoPasswordSet):
 		appmw.WriteError(w, http.StatusConflict,
@@ -100,18 +107,40 @@ func (h *ClubFairAuthHandler) SignInWithGoogle(w http.ResponseWriter, r *http.Re
 	appmw.WriteJSON(w, http.StatusOK, session)
 }
 
-// POST /clubfair/auth/login — { phone, password }
+// POST /clubfair/auth/login — { identifier | student_id | phone, password }
+//
+// Three names for one field, and that is backwards compatibility rather than
+// indecision. The Android app posts `phone` and has done since the endpoint
+// existed; changing the name would break every installed copy. `student_id` is
+// what the website's form posts, because that is what its label says. And
+// `identifier` is for anything written later that does not want to pick.
+//
+// The service reads the shape of whatever arrives, so all three take a phone
+// number, a student id or an email equally — the field names are documentation
+// for the caller, not a routing decision.
 func (h *ClubFairAuthHandler) SignInWithPassword(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Phone    string `json:"phone"`
-		Password string `json:"password"`
+		Identifier string `json:"identifier"`
+		StudentID  string `json:"student_id"`
+		Phone      string `json:"phone"`
+		Password   string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		appmw.WriteError(w, http.StatusBadRequest, "รูปแบบคำขอไม่ถูกต้อง")
 		return
 	}
 
-	session, err := h.service.SignInWithPassword(r.Context(), body.Phone, body.Password)
+	// First non-empty wins. `phone` is checked last so that a client sending
+	// both an empty legacy field and a filled new one gets the filled one.
+	identifier := body.Identifier
+	if identifier == "" {
+		identifier = body.StudentID
+	}
+	if identifier == "" {
+		identifier = body.Phone
+	}
+
+	session, err := h.service.SignInWithPassword(r.Context(), identifier, body.Password)
 	if err != nil {
 		authError(w, err)
 		return

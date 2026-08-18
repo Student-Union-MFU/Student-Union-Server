@@ -293,14 +293,36 @@ func main() {
 	clubFairChannelService := service.NewClubFairChannelService(clubFairChannelRepo)
 	clubFairChannelHandler := handler.NewClubFairChannelHandler(clubFairChannelService)
 
+	// The fair's own details and its running order — migration 000023.
+	clubFairContentRepo := repository.NewClubFairContentRepository(pool)
+	clubFairContentService := service.NewClubFairContentService(clubFairContentRepo)
+	clubFairContentHandler := handler.NewClubFairContentHandler(clubFairContentService)
+
+	// The staff dashboard: the participant roster and the prize tiers.
 	clubFairAdminRepo := repository.NewClubFairAdminRepository(pool)
 	clubFairAdminService := service.NewClubFairAdminService(clubFairAdminRepo)
 	clubFairAdminHandler := handler.NewClubFairAdminHandler(clubFairAdminService)
+
+	// The write half of the booth table. Shares BoothService with the SU app's
+	// read-only /su-server/booths, which is why the handler is separate rather
+	// than the service — see ClubFairBoothHandler.
+	clubFairBoothHandler := handler.NewClubFairBoothHandler(boothService)
 
 	requireClubFair := appmw.RequireClubFairAuth(clubFairTokens)
 	requireClubFairStaff := appmw.RequireClubFairRole(
 		appmw.ClubFairRoleStaff, appmw.ClubFairRoleAdmin)
 	requireClubFairAdmin := appmw.RequireClubFairRole(appmw.ClubFairRoleAdmin)
+
+	// Who may ask a booth what to put on its screen.
+	//
+	// ⚠ Deliberately a second, wider list rather than an addition to
+	// requireClubFairStaff. A booth owner is not staff: adding the role there
+	// would hand every booth's volunteers the announcements channel, the
+	// participant roster and the prize table in one line. This gate is used on
+	// exactly one route, and the per-booth half of the check is in
+	// ClubFairCheckInService.CurrentCode.
+	requireClubFairBoothScreen := appmw.RequireClubFairRole(
+		appmw.ClubFairRoleStaff, appmw.ClubFairRoleAdmin, appmw.ClubFairRoleBoothOwner)
 
 	/* ============================================================
 	   WBW routes — เว็บ web-next proxy /api/* มาที่นี่
@@ -482,12 +504,21 @@ func main() {
 				r.Post("/register", clubFairAuthHandler.Register)
 			})
 
-			// The booth directory is the one open endpoint: it is the same public
-			// list for everyone, it carries no secret (PublicBooth has no such
-			// field), and a student deciding whether to come should not have to
-			// sign in to read it.
+			// The open endpoints. All five are the same list for everyone, none
+			// carries a secret, and a student deciding whether to come should not
+			// have to sign in to read any of them — which is also what lets the
+			// public website render them with no token at all.
+			//
+			// /info and /prizes exist to stop the clients holding their own
+			// copies of this data. The fair's dates were a constant in the
+			// Android app and another in the website, and the prize thresholds
+			// were a third; each was a thing the Student Union could change in a
+			// row but not without a release.
 			r.Get("/booths", boothHandler.GetAllBooths)
 			r.Get("/zones", clubFairFairHandler.ListZones)
+			r.Get("/info", clubFairContentHandler.Info)
+			r.Get("/program", clubFairContentHandler.Program)
+			r.Get("/prizes", clubFairAdminHandler.ListPrizes)
 
 			// The admin console page. Public like /booths — it is an empty
 			// shell; every number on it comes from /clubfair/admin/dashboard,
@@ -500,6 +531,11 @@ func main() {
 				r.Get("/me", clubFairAuthHandler.Me)
 				r.Patch("/me", clubFairAuthHandler.UpdateMe)
 				r.Put("/me/password", clubFairAuthHandler.SetPassword)
+				// The booths the caller runs, which is what a booth owner's own
+				// screen loads. No role gate: an account with no assignments
+				// gets an empty list, and that is the true answer for every
+				// student at the fair.
+				r.Get("/me/booths", clubFairAdminHandler.MyBooths)
 				r.Delete("/me", clubFairAuthHandler.DeleteMe)
 
 				r.Get("/progress", clubFairFairHandler.Progress)
@@ -519,21 +555,97 @@ func main() {
 					})
 				})
 
+				/*
+				   What the display at a booth polls.
+				   ⚠ Gated by requireClubFairBoothScreen, NOT
+				   requireClubFairStaff, and the handler is not the
+				   whole of the check. The middleware admits staff,
+				   admin and booth_owner; CurrentCode then refuses a
+				   booth owner any booth not assigned to them, because
+				   "may this user see THIS booth" is a question about a
+				   row, which no role middleware can answer.
+
+				   Before booth_owner existed this was staff-only, which
+				   meant a screen on a booth's table held a credential
+				   that could also post to two thousand students and read
+				   the whole roster. See migration 000024.
+				*/
+				r.With(requireClubFairBoothScreen).
+					Get("/booths/{id}/checkin-code", clubFairFairHandler.BoothCheckInCode)
+
 				r.Group(func(r chi.Router) {
 					r.Use(requireClubFairStaff)
-					// What the display at a booth polls. Staff-only because the
-					// code it returns is what mints a valid check-in.
-					r.Get("/booths/{id}/checkin-code", clubFairFairHandler.BoothCheckInCode)
 					// A prize is a physical object leaving a table.
 					r.Post("/prizes/claim", clubFairFairHandler.ClaimPrize)
 				})
 
-				// Admin console, same shape as /wbw/admin. Admin-only — the
-				// first route that uses the role, which until now was only
-				// folded into the staff group.
+				/* ----------------------------------------------------
+				   The staff dashboard.
+
+				   Grouped under /admin the way WBW's is, so the split
+				   between "what a student may read" and "what staff may
+				   change" is visible in the URL rather than only in this
+				   file. Every route below is staff or above; the two that
+				   are admin-only enforce it in the service, because the
+				   rule is about the *edit* (moving a role) rather than
+				   about the route.
+				   ---------------------------------------------------- */
 				r.Route("/admin", func(r chi.Router) {
-					r.Use(requireClubFairAdmin)
-					r.Get("/dashboard", clubFairAdminHandler.Dashboard)
+					r.Use(requireClubFairStaff)
+
+					// The fair itself. PUT, not PATCH: the dashboard shows
+					// the whole thing, so a cleared box means cleared.
+					r.Put("/info", clubFairContentHandler.SaveInfo)
+
+					// Drafts included, unlike the public /program.
+					r.Get("/program", clubFairContentHandler.ProgramForAdmin)
+					r.Post("/program", clubFairContentHandler.CreateProgramEntry)
+					r.Put("/program/{id}", clubFairContentHandler.UpdateProgramEntry)
+					r.Delete("/program/{id}", clubFairContentHandler.DeleteProgramEntry)
+
+					// Booth writes. The read stays on the public route —
+					// there is one booth list and no reason for staff to
+					// see a different one.
+					r.Get("/booth-categories", clubFairBoothHandler.Categories)
+					r.Post("/booths", clubFairBoothHandler.Create)
+					r.Put("/booths/{id}", clubFairBoothHandler.Update)
+					r.Delete("/booths/{id}", clubFairBoothHandler.Delete)
+
+					// Retired tiers and claim counts, which the public list
+					// deliberately does not carry.
+					r.Get("/prizes", clubFairAdminHandler.ListPrizesForAdmin)
+					r.Post("/prizes", clubFairAdminHandler.CreatePrize)
+					r.Put("/prizes/{id}", clubFairAdminHandler.UpdatePrize)
+					r.Delete("/prizes/{id}", clubFairAdminHandler.DeletePrize)
+
+					r.Get("/participants", clubFairAdminHandler.ListParticipants)
+					r.Get("/participants/{id}", clubFairAdminHandler.ParticipantDetail)
+					// Creating an account with any role above student is
+					// admin-only, for the same reason promoting one is:
+					// they give away exactly the same thing.
+					r.Post("/participants", clubFairAdminHandler.CreateParticipant)
+					// Role changes inside this are admin-only — see
+					// ClubFairAdminService.UpdateParticipant.
+					r.Patch("/participants/{id}", clubFairAdminHandler.UpdateParticipant)
+					// Booth assignment is staff-level, unlike the role
+					// itself: granting booth_owner is the decision that
+					// matters and is an admin's, while deciding that the
+					// person already running A4 also runs A5 happens twice
+					// an hour during setup.
+					r.Put("/participants/{id}/booths", clubFairAdminHandler.SetParticipantBooths)
+					// Admin-only, and refused on your own account —
+					// see SetParticipantPassword. It is the only way
+					// back for someone an admin created who cannot
+					// sign in, and it does not end a live session.
+					r.Put("/participants/{id}/password", clubFairAdminHandler.SetParticipantPassword)
+
+					// The fair at a glance, for the console at
+					// /clubfair/dashboard. Admin-only, so gated with
+					// r.With rather than by its own r.Route — a second
+					// r.Route("/admin") on this router is a startup panic,
+					// and the rest of the block is staff-level.
+					r.With(requireClubFairAdmin).
+						Get("/dashboard", clubFairAdminHandler.Dashboard)
 				})
 			})
 		})
