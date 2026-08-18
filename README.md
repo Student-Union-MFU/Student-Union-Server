@@ -86,6 +86,12 @@ frontends cannot parse.
 
 `GET /` returns `{"message": "SU Backend running"}` and is the health check.
 
+Three routes sit outside every product prefix. `GET /privacy` and `GET /support`
+are self-contained HTML pages, embedded in the binary rather than served from a
+static directory, because the app stores require a reachable URL for both and a
+missing one is a store rejection. `GET /clubfair/dashboard` is the same idea for
+the staff console — see [Club Fair](#club-fair--clubfair).
+
 ### SU app — `/su-server`
 
 #### Auth
@@ -311,6 +317,8 @@ Registered only when `CLUBFAIR_JWT_SECRET` is set — see
 | `GET` | `/clubfair/me` | student | Who am I. Never returns `password_hash` or `oauth_subject` |
 | `PATCH` | `/clubfair/me` | student | Phone, school, major. Absent fields are untouched |
 | `PUT` | `/clubfair/me/password` | student | How a Google-only account gains the password fallback |
+| `DELETE` | `/clubfair/me` | student | Delete your own account. `204`, and the stamps go with it |
+| `GET` | `/clubfair/me/booths` | student | The booths you run. No role gate — an account with no assignments gets `[]`, which is the true answer for almost everyone |
 | `GET` | `/clubfair/progress` | student | Count, visited booth ids, rank and prize tiers in one call |
 | `GET` | `/clubfair/checkins` | student | This student's stamps, oldest first |
 | `POST` | `/clubfair/checkins` | student | Record a scan. Idempotent on `client_id` |
@@ -318,7 +326,7 @@ Registered only when `CLUBFAIR_JWT_SECRET` is set — see
 | `POST` | `/clubfair/announcements/{id}/reactions` | student | Toggle one of five emoji |
 | `POST` | `/clubfair/announcements` | **staff** | Post |
 | `DELETE` | `/clubfair/announcements/{id}` | **staff** | Soft delete |
-| `GET` | `/clubfair/booths/{id}/checkin-code` | **staff** | The booth display polls this for its current rotating code |
+| `GET` | `/clubfair/booths/{id}/checkin-code` | **staff · booth owner** | The booth display polls this for its current rotating code. A booth owner reaches only its own booths — the per-row half of the check is in the service, not the middleware |
 | `POST` | `/clubfair/prizes/claim` | **staff** | Hand a prize over. Threshold re-checked server-side |
 | `PUT` | `/clubfair/admin/info` | **staff** | Move the fair's dates, venue and notice |
 | `GET` | `/clubfair/admin/program` | **staff** | The running order, drafts included |
@@ -327,8 +335,12 @@ Registered only when `CLUBFAIR_JWT_SECRET` is set — see
 | `POST`/`PUT`/`DELETE` | `/clubfair/admin/booths[/{id}]` | **staff** | Edit booths. `secret` is never accepted or returned; a delete is refused once anyone has scanned it |
 | `GET` | `/clubfair/admin/prizes` | **staff** | Tiers with claim counts, retired ones included |
 | `POST`/`PUT`/`DELETE` | `/clubfair/admin/prizes[/{id}]` | **staff** | Edit tiers. A delete is refused once anyone has claimed one — retire it instead |
-| `GET` | `/clubfair/admin/participants` | **staff** | The roster, paged, searchable, with each student's stamp count |
+| `GET` | `/clubfair/admin/participants` | **staff** | The roster, paged, searchable, with each student's stamp count. `limit` is capped at 200 |
+| `GET` | `/clubfair/admin/participants/{id}` | **staff** | One student: profile, stamps, prizes, booths |
+| `POST` | `/clubfair/admin/participants` | **admin** | Create an account. Admin-only for the same reason promoting one is |
 | `PATCH` | `/clubfair/admin/participants/{id}` | **staff** | Flag an account. **Role changes are admin-only** |
+| `PUT` | `/clubfair/admin/participants/{id}/booths` | **staff** | Reassign booths. Staff-level on purpose — granting the *role* is the admin decision, moving a shift is not |
+| `PUT` | `/clubfair/admin/participants/{id}/password` | **admin** | Reset someone's password. Refused on your own account, and it does not end a live session |
 | `GET` | `/clubfair/dashboard` | — | The admin console page (HTML). An empty shell — the numbers come from the endpoint below |
 | `GET` | `/clubfair/admin/dashboard` | **admin** | The fair at a glance: students, total check-ins, prizes claimed, full sweeps |
 
@@ -473,9 +485,10 @@ one cannot drift.
 revocation list, so a demotion and `is_flagged` alike only bite at the next
 sign-in. The assignment row is the one half of the booth check that reads live
 state, which is why `UpdateParticipant` **deletes** an owner's assignments when
-their role moves off `booth_owner`. Measured rather than assumed: with the rows
-kept, a demoted owner's existing token still opened the booth's code after the
-demotion had returned 200.
+their role moves off `booth_owner`. Follow it through the code and the reason
+is plain: the role in that token still says `booth_owner`, so with the assignment
+rows left in place `CurrentCode` would find the membership and answer — the
+demotion having already returned `200`.
 
 Barriers 2 and 3 are also why SU and WBW can share `JWT_SECRET` today:
 `su_auth.go` rejects `UserID <= 0`, which works *only* because the two claim
