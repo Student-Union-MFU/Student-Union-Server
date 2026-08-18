@@ -178,6 +178,12 @@ func main() {
 		w.Write([]byte(`{"message": "SU Backend running"}`))
 	})
 
+	// Public legal pages for the App Store listing (privacy-policy URL and
+	// support URL). No auth, no service dependencies, registered outside the
+	// clubfair conditional so they stay up even without CLUBFAIR_JWT_SECRET.
+	r.Get("/privacy", handler.LegalPrivacyPage)
+	r.Get("/support", handler.LegalSupportPage)
+
 	r.Route("/su-server", func(r chi.Router) {
 		// Public: the only way to obtain a token, plus the reads another
 		// client is known to call. Closing those is a following round, once
@@ -305,6 +311,7 @@ func main() {
 	requireClubFair := appmw.RequireClubFairAuth(clubFairTokens)
 	requireClubFairStaff := appmw.RequireClubFairRole(
 		appmw.ClubFairRoleStaff, appmw.ClubFairRoleAdmin)
+	requireClubFairAdmin := appmw.RequireClubFairRole(appmw.ClubFairRoleAdmin)
 
 	// Who may ask a booth what to put on its screen.
 	//
@@ -513,6 +520,11 @@ func main() {
 			r.Get("/program", clubFairContentHandler.Program)
 			r.Get("/prizes", clubFairAdminHandler.ListPrizes)
 
+			// The admin console page. Public like /booths — it is an empty
+			// shell; every number on it comes from /clubfair/admin/dashboard,
+			// which is where the admin gate lives.
+			r.Get("/dashboard", clubFairAdminHandler.DashboardPage)
+
 			r.Group(func(r chi.Router) {
 				r.Use(requireClubFair)
 
@@ -524,6 +536,7 @@ func main() {
 				// gets an empty list, and that is the true answer for every
 				// student at the fair.
 				r.Get("/me/booths", clubFairAdminHandler.MyBooths)
+				r.Delete("/me", clubFairAuthHandler.DeleteMe)
 
 				r.Get("/progress", clubFairFairHandler.Progress)
 				r.Get("/checkins", clubFairFairHandler.ListCheckIns)
@@ -625,6 +638,14 @@ func main() {
 					// back for someone an admin created who cannot
 					// sign in, and it does not end a live session.
 					r.Put("/participants/{id}/password", clubFairAdminHandler.SetParticipantPassword)
+
+					// The fair at a glance, for the console at
+					// /clubfair/dashboard. Admin-only, so gated with
+					// r.With rather than by its own r.Route — a second
+					// r.Route("/admin") on this router is a startup panic,
+					// and the rest of the block is staff-level.
+					r.With(requireClubFairAdmin).
+						Get("/dashboard", clubFairAdminHandler.Dashboard)
 				})
 			})
 		})

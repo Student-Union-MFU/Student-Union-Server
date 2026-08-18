@@ -156,6 +156,18 @@ type ClubFairPrizeTier struct {
 	Claimed bool `json:"claimed"`
 }
 
+// ClubFairDashboardStats is the fair at a glance, for the admin console.
+//
+// Same shape as WBW's DashboardStats: four counts, one query, one screen.
+// FullSweeps counts students who have stamped every booth — the number the
+// prize table needs to know how many "Full sweep" tiers to have on hand.
+type ClubFairDashboardStats struct {
+	Students      int `json:"students"`
+	TotalCheckins int `json:"total_checkins"`
+	PrizesClaimed int `json:"prizes_claimed"`
+	FullSweeps    int `json:"full_sweeps"`
+}
+
 // ClubFairProgress is the whole of what Home renders, in one response.
 //
 // One call rather than four, because Home shows the count, the percentage, the

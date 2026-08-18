@@ -437,3 +437,12 @@ func (s *ClubFairAdminService) SetParticipantPassword(
 	}
 	return s.repo.SetParticipantPassword(ctx, id, string(hash))
 }
+
+// ---- The fair at a glance ------------------------------------------------
+
+// Dashboard is a straight passthrough: four counts with no rule attached to
+// them. It stays on this service rather than its own because the console that
+// reads it is the same console as the roster above.
+func (s *ClubFairAdminService) Dashboard(ctx context.Context) (*model.ClubFairDashboardStats, error) {
+	return s.repo.Dashboard(ctx)
+}

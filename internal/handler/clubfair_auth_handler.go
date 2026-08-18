@@ -229,3 +229,16 @@ func (h *ClubFairAuthHandler) SetPassword(w http.ResponseWriter, r *http.Request
 	}
 	appmw.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+// DeleteMe removes the caller's own Club Fair account and everything the schema
+// cascades from it. 204 on success — the iOS client needs only a 2xx and reads
+// no body. Account deletion is an App Store requirement (5.1.1(v)).
+func (h *ClubFairAuthHandler) DeleteMe(w http.ResponseWriter, r *http.Request) {
+	claims := appmw.ClubFairClaimsFrom(r.Context())
+
+	if err := h.service.Delete(r.Context(), claims.UserID); err != nil {
+		authError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

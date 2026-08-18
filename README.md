@@ -329,6 +329,8 @@ Registered only when `CLUBFAIR_JWT_SECRET` is set — see
 | `POST`/`PUT`/`DELETE` | `/clubfair/admin/prizes[/{id}]` | **staff** | Edit tiers. A delete is refused once anyone has claimed one — retire it instead |
 | `GET` | `/clubfair/admin/participants` | **staff** | The roster, paged, searchable, with each student's stamp count |
 | `PATCH` | `/clubfair/admin/participants/{id}` | **staff** | Flag an account. **Role changes are admin-only** |
+| `GET` | `/clubfair/dashboard` | — | The admin console page (HTML). An empty shell — the numbers come from the endpoint below |
+| `GET` | `/clubfair/admin/dashboard` | **admin** | The fair at a glance: students, total check-ins, prizes claimed, full sweeps |
 
 #### The staff dashboard
 
