@@ -585,7 +585,7 @@ from `.env`. They must agree, or `migrate` cannot log in on a fresh volume.
 | `WBW_EMERGENCY_PHONE` | Central number, returned with `/wbw/me/progress`. Empty = the app uses its built-in default | |
 | `CLUBFAIR_JWT_SECRET` | **Separate** Club Fair key. Unset = `/clubfair` not registered | |
 | `CLUBFAIR_CHECKIN_MAX_AGE_SECONDS` | How old a booth code may be — also the shared-screenshot window | `180` |
-| `CLUBFAIR_INTAKE_PREFIXES` | Which intakes may **open a new account**, as leading student-id digits — `69` is the 2569 entry, so the default is the three years on campus. `*` accepts any. Existing accounts sign in regardless, so nobody is locked out retrospectively | `67,68,69` |
+| `CLUBFAIR_INTAKE_PREFIXES` | Which intakes may **open a new account**, as leading student-id digits — `69` is the 2569 entry, so the default is the four years on campus. `*` accepts any. Existing accounts sign in regardless, so nobody is locked out retrospectively | `66,67,68,69` |
 | `WBW_DB_TESTS` · `WBW_TEST_DSN` | Turn the real-Postgres tests on; see [Tests](#tests) | `1` |
 
 ### Migrations

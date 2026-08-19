@@ -258,7 +258,7 @@ type ClubFairNewParticipant struct {
 //     the same rule a self-registered one is.
 //
 // And one it does: **the intake window.** `eligibleIntake` gates who may *open*
-// a student account, because the fair is for intakes 67–69. A staff member or a
+// a student account, because the fair is for intakes 66–69. A staff member or a
 // booth owner is not collecting stamps, and refusing to create one because their
 // student id starts with 64 would be applying a rule about prizes to a rule
 // about employment.
