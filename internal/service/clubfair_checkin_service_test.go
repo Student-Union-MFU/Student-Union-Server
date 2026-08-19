@@ -142,6 +142,90 @@ func TestCheckInMaxAgeDefault(t *testing.T) {
 	}
 }
 
+// The ordinary rule, with no exemption configured: a code is good for
+// CheckInMaxAge and then it is not.
+func TestCodeAgeWithoutAnExemption(t *testing.T) {
+	t.Setenv("CLUBFAIR_CHECKIN_MAX_AGE_SECONDS", "180")
+	t.Setenv(reviewBoothEnv, "")
+	t.Setenv(reviewUntilEnv, "")
+
+	now := time.Unix(59544784*int64(CheckInWindow.Seconds()), 0)
+	current := windowAt(now)
+
+	if err := checkCodeAge(1, current, now); err != nil {
+		t.Errorf("the current window should verify: %v", err)
+	}
+	// 3 minutes is 6 windows; the sixth is still inside the rule.
+	if err := checkCodeAge(1, current-6, now); err != nil {
+		t.Errorf("a code 3 minutes old should verify: %v", err)
+	}
+	if err := checkCodeAge(1, current-7, now); err != ErrCheckInCodeExpired {
+		t.Errorf("a code older than 3 minutes gave %v, want expired", err)
+	}
+	if err := checkCodeAge(1, current+2, now); err != ErrCheckInCodeExpired {
+		t.Errorf("a code from the future gave %v, want expired", err)
+	}
+}
+
+// The exemption App Review needs: one booth, and only until the date it carries.
+func TestReviewBoothExemption(t *testing.T) {
+	t.Setenv("CLUBFAIR_CHECKIN_MAX_AGE_SECONDS", "180")
+	t.Setenv(reviewBoothEnv, "1")
+	t.Setenv(reviewUntilEnv, "2026-08-21T23:59:00+07:00")
+
+	// Days after the code was minted, which is the case the PNG in the
+	// submission has to survive.
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	stale := windowAt(now.Add(-72 * time.Hour))
+
+	if err := checkCodeAge(1, stale, now); err != nil {
+		t.Errorf("the exempt booth should accept a three-day-old code: %v", err)
+	}
+
+	// The narrowness is the point: every other booth keeps the ordinary rule.
+	if err := checkCodeAge(2, stale, now); err != ErrCheckInCodeExpired {
+		t.Errorf("booth 2 got the exemption: %v", err)
+	}
+
+	// Still not a way round the future check.
+	if err := checkCodeAge(1, windowAt(now)+2, now); err != ErrCheckInCodeExpired {
+		t.Errorf("the exempt booth accepted a future code: %v", err)
+	}
+
+	// After the date, the exempt booth is an ordinary booth again — the whole
+	// reason the date exists, since the fair opens the next morning.
+	afterFairOpens := time.Date(2026, 8, 22, 9, 0, 0, 0, time.FixedZone("ICT", 7*3600))
+	if err := checkCodeAge(1, stale, afterFairOpens); err != ErrCheckInCodeExpired {
+		t.Errorf("the exemption outlived its date: %v", err)
+	}
+}
+
+// Fails closed. A half-set or misspelt exemption must not quietly widen the
+// window for a booth, and must not widen it for everyone either.
+func TestReviewBoothExemptionFailsClosed(t *testing.T) {
+	t.Setenv("CLUBFAIR_CHECKIN_MAX_AGE_SECONDS", "180")
+
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	stale := windowAt(now.Add(-72 * time.Hour))
+
+	for name, env := range map[string][2]string{
+		"both unset":         {"", ""},
+		"booth only":         {"1", ""},
+		"date only":          {"", "2026-08-21T23:59:00+07:00"},
+		"booth not a number": {"one", "2026-08-21T23:59:00+07:00"},
+		"booth zero":         {"0", "2026-08-21T23:59:00+07:00"},
+		"date not RFC3339":   {"1", "21 Aug 2026"},
+		"date with no zone":  {"1", "2026-08-21T23:59:00"},
+	} {
+		t.Setenv(reviewBoothEnv, env[0])
+		t.Setenv(reviewUntilEnv, env[1])
+
+		if err := checkCodeAge(1, stale, now); err != ErrCheckInCodeExpired {
+			t.Errorf("%s: stale code accepted, want expired", name)
+		}
+	}
+}
+
 func TestNormalisePhone(t *testing.T) {
 	for raw, want := range map[string]string{
 		"0683150329":      "0683150329",

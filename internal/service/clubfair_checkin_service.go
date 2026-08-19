@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strconv"
@@ -108,6 +109,85 @@ func maxAgeWindows() int64 {
 // How far ahead of the server a booth device's clock may be. One window, for
 // skew only — a code from the future is otherwise meaningless.
 const checkInFutureTolerance = 1
+
+// The two settings behind the App Review exemption below.
+const (
+	reviewBoothEnv = "CLUBFAIR_REVIEW_BOOTH_ID"
+	reviewUntilEnv = "CLUBFAIR_REVIEW_CODE_UNTIL"
+)
+
+/*
+isReviewExempt reports whether one booth's codes may arrive at any age.
+
+WHY THIS EXISTS: App Review needs something to scan, and asked for an image.
+Every code this service mints is dead three minutes later, so a PNG attached to a
+submission is expired before a reviewer opens it — which is what got build 1.0(3)
+rejected under guideline 2.1(a). One booth's codes are allowed to arrive stale so
+that one PNG keeps working.
+
+WHAT IT DOES NOT RELAX, and this is the whole reason it is narrow: the HMAC. A
+code for the exempt booth still has to have been minted by this server from that
+booth's secret, so the only payload this admits is the one in the image we sent
+Apple. It is not a way to check in without a code; it is a way for one known code
+to stay valid.
+
+BOTH SETTINGS ARE REQUIRED AND IT FAILS CLOSED. Unset, malformed, or past its
+date, and every booth keeps the ordinary [CheckInMaxAge] rule. The date is the
+point: set it before the fair opens and the exemption lapses on its own, so the
+defence students' scans depend on does not rest on somebody remembering to
+unset an environment variable on the morning of the event.
+*/
+func isReviewExempt(boothID int, now time.Time) bool {
+	rawBooth := os.Getenv(reviewBoothEnv)
+	rawUntil := os.Getenv(reviewUntilEnv)
+	if rawBooth == "" || rawUntil == "" {
+		return false
+	}
+
+	exempt, err := strconv.Atoi(rawBooth)
+	if err != nil || exempt <= 0 {
+		slog.Warn("review booth exemption ignored: unreadable booth id",
+			"var", reviewBoothEnv, "value", rawBooth)
+		return false
+	}
+	until, err := time.Parse(time.RFC3339, rawUntil)
+	if err != nil {
+		// Loud, because the failure is invisible from the outside: the reviewer
+		// simply sees "this code has expired" and the submission is rejected
+		// again for the same reason.
+		slog.Warn("review booth exemption ignored: unreadable date",
+			"var", reviewUntilEnv, "value", rawUntil, "want", time.RFC3339)
+		return false
+	}
+
+	return boothID == exempt && now.Before(until)
+}
+
+// checkCodeAge decides whether a scanned code arrived in time.
+//
+// Separated from [ClubFairCheckInService.Verify] because it is the whole of the
+// age policy and needs no database: the exemption above is a decision about a
+// booth id and a clock, and a rule that can only be exercised against a live
+// Postgres is a rule that goes untested.
+func checkCodeAge(boothID int, window int64, now time.Time) error {
+	current := windowAt(now)
+
+	// Checked for every booth, exempt or not. A code from the future is
+	// meaningless whatever booth it names, and admitting one would let a
+	// mis-set clock — or the exemption's own date — be jumped over.
+	if window > current+checkInFutureTolerance {
+		return ErrCheckInCodeExpired
+	}
+
+	if isReviewExempt(boothID, now) {
+		return nil
+	}
+
+	if current-window > maxAgeWindows() {
+		return ErrCheckInCodeExpired
+	}
+	return nil
+}
 
 // CheckInOutcome is what happened, because three results need three different
 // things said to someone standing at a booth holding a phone up.
@@ -295,12 +375,8 @@ func (s *ClubFairCheckInService) Verify(ctx context.Context, payload string) (bo
 
 	// Age is checked before the HMAC, so an ancient code costs a rejection
 	// rather than a database read for the secret.
-	current := windowAt(time.Now())
-	if scanned.Window > current+checkInFutureTolerance {
-		return 0, ErrCheckInCodeExpired
-	}
-	if current-scanned.Window > maxAgeWindows() {
-		return 0, ErrCheckInCodeExpired
+	if err := checkCodeAge(scanned.BoothID, scanned.Window, time.Now()); err != nil {
+		return 0, err
 	}
 
 	secret, err := s.repo.BoothSecret(ctx, scanned.BoothID)
