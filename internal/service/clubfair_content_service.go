@@ -146,3 +146,70 @@ func (s *ClubFairContentService) UpdateProgramEntry(
 func (s *ClubFairContentService) DeleteProgramEntry(ctx context.Context, id int) error {
 	return s.repo.DeleteProgramEntry(ctx, id)
 }
+
+// ---- Staff contacts ------------------------------------------------------
+
+// ErrStaffContactRoleMissing is the one rule this list has.
+//
+// A contact with no role is a phone number nobody can act on: the role is the
+// column a staff member scans for. The name and the number are both optional and
+// deliberately so — see migration 000025.
+var ErrStaffContactRoleMissing = errors.New("clubfair: a staff contact needs a role")
+
+// StaffContacts is the rota, for the staff screen and for the dashboard editor.
+//
+// One method for both, matching the repository. There is no published/draft
+// split here, and a staff member calling a number the editor has already removed
+// is exactly what two separate reads would eventually produce.
+func (s *ClubFairContentService) StaffContacts(
+	ctx context.Context,
+) ([]model.ClubFairStaffContact, error) {
+	return s.repo.ListStaffContacts(ctx)
+}
+
+// normaliseStaffContact applies the rule and cleans the text fields.
+//
+// The phone number is trimmed and otherwise left exactly as typed. No format
+// normalising, no stripping of spaces or dashes: this column has to hold an
+// internal extension, a mobile with dashes and whatever the Student Union
+// actually writes on its rota, and a server that reformats one of those is a
+// server that eventually mangles one. The website strips the separators itself
+// when it builds the `tel:` link, which is the one place a machine reads it.
+func normaliseStaffContact(c model.ClubFairStaffContact) (model.ClubFairStaffContact, error) {
+	c.Role = strings.TrimSpace(c.Role)
+	if c.Role == "" {
+		return c, ErrStaffContactRoleMissing
+	}
+
+	c.RoleEN = blankToNil(c.RoleEN)
+	c.Name = blankToNil(c.Name)
+	c.Phone = blankToNil(c.Phone)
+	c.Note = blankToNil(c.Note)
+	c.NoteEN = blankToNil(c.NoteEN)
+
+	return c, nil
+}
+
+func (s *ClubFairContentService) CreateStaffContact(
+	ctx context.Context, c model.ClubFairStaffContact, updatedBy int,
+) (*model.ClubFairStaffContact, error) {
+	c, err := normaliseStaffContact(c)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.CreateStaffContact(ctx, c, updatedBy)
+}
+
+func (s *ClubFairContentService) UpdateStaffContact(
+	ctx context.Context, id int, c model.ClubFairStaffContact, updatedBy int,
+) (*model.ClubFairStaffContact, error) {
+	c, err := normaliseStaffContact(c)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.UpdateStaffContact(ctx, id, c, updatedBy)
+}
+
+func (s *ClubFairContentService) DeleteStaffContact(ctx context.Context, id int) error {
+	return s.repo.DeleteStaffContact(ctx, id)
+}

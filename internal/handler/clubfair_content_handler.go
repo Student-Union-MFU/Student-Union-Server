@@ -15,12 +15,21 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// ClubFairContentHandler serves the fair's own details and its running order.
+// ClubFairContentHandler serves the fair's own details, its running order, and
+// the rota staff read on their own screen.
 //
-// Both are read publicly and written by staff, which is why one handler carries
-// both halves — the two routes for the programme differ only in whether drafts
-// are included, and putting them in one file is what keeps that difference
-// visible.
+// The first two are read publicly and written by staff, which is why one handler
+// carries both halves — the two routes for the programme differ only in whether
+// drafts are included, and putting them in one file is what keeps that
+// difference visible.
+//
+// ⚠ The third is the exception and the one thing to notice in this file: staff
+// contacts are **not public**. Everything else here is open on purpose, so a
+// student deciding whether to come does not have to sign in; a list of named
+// people's phone numbers is the opposite kind of thing. Its read is gated with
+// `requireClubFairStaff` in main.go, and it is grouped here rather than given
+// its own handler because it is the same shape of edit by the same people
+// against the same repository — not because it shares their audience.
 type ClubFairContentHandler struct {
 	service *service.ClubFairContentService
 }
@@ -44,6 +53,10 @@ func contentError(w http.ResponseWriter, err error) {
 		appmw.WriteError(w, http.StatusBadRequest, "ต้องมีชื่อรายการ")
 	case errors.Is(err, repository.ErrProgramEntryNotFound):
 		appmw.WriteError(w, http.StatusNotFound, "ไม่พบรายการนี้")
+	case errors.Is(err, service.ErrStaffContactRoleMissing):
+		appmw.WriteError(w, http.StatusBadRequest, "ต้องระบุหน้าที่ที่ติดต่อ")
+	case errors.Is(err, repository.ErrStaffContactNotFound):
+		appmw.WriteError(w, http.StatusNotFound, "ไม่พบผู้ติดต่อนี้")
 	case errors.Is(err, repository.ErrFairInfoMissing):
 		// Not a client error: the migration seeds this row, so its absence means
 		// the database has been edited by hand.
@@ -240,4 +253,113 @@ func pathID(w http.ResponseWriter, r *http.Request) (int, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+// ---- Staff contacts ------------------------------------------------------
+
+// GET /clubfair/staff/contacts — the rota. **Staff and admin only.**
+//
+// On `/staff/…` rather than under `/admin/…`, and that is deliberate rather than
+// cosmetic. The website's staff screen is precisely the surface that is *not*
+// the dashboard — see `canUseDashboard` in the website's `lib/session.ts` — and
+// the outstanding server-side half of that change is narrowing
+// `requireClubFairStaff` on `/clubfair/admin/*` to admins. A read living at
+// `/admin/contacts` would break the staff screen on the day somebody does that.
+func (h *ClubFairContentHandler) StaffContacts(w http.ResponseWriter, r *http.Request) {
+	contacts, err := h.service.StaffContacts(r.Context())
+	if err != nil {
+		contentError(w, err)
+		return
+	}
+	appmw.WriteJSON(w, http.StatusOK, contacts)
+}
+
+// staffContactBody is one contact as the dashboard sends it.
+//
+// Every field on every write — the editor shows the whole row, so an empty box
+// means cleared. See UpdateStaffContact in the repository.
+type staffContactBody struct {
+	Role   string  `json:"role"`
+	RoleEN *string `json:"role_en"`
+	Name   *string `json:"name"`
+	Phone  *string `json:"phone"`
+	Note   *string `json:"note"`
+	NoteEN *string `json:"note_en"`
+	// Absent sorts to the top, which is the least surprising place for a row
+	// somebody just added and has not ranked yet.
+	SortOrder int `json:"sort_order"`
+}
+
+func (b staffContactBody) contact() model.ClubFairStaffContact {
+	return model.ClubFairStaffContact{
+		Role:      b.Role,
+		RoleEN:    b.RoleEN,
+		Name:      b.Name,
+		Phone:     b.Phone,
+		Note:      b.Note,
+		NoteEN:    b.NoteEN,
+		SortOrder: b.SortOrder,
+	}
+}
+
+// decodeStaffContactBody reads the body. The role is checked in the service
+// rather than here, because trimming is what decides whether " " is a role.
+func decodeStaffContactBody(w http.ResponseWriter, r *http.Request) (*staffContactBody, bool) {
+	var body staffContactBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		appmw.WriteError(w, http.StatusBadRequest, "รูปแบบคำขอไม่ถูกต้อง")
+		return nil, false
+	}
+	return &body, true
+}
+
+// POST /clubfair/admin/contacts — staff only.
+func (h *ClubFairContentHandler) CreateStaffContact(w http.ResponseWriter, r *http.Request) {
+	claims := appmw.ClubFairClaimsFrom(r.Context())
+
+	body, ok := decodeStaffContactBody(w, r)
+	if !ok {
+		return
+	}
+
+	contact, err := h.service.CreateStaffContact(r.Context(), body.contact(), claims.UserID)
+	if err != nil {
+		contentError(w, err)
+		return
+	}
+	appmw.WriteJSON(w, http.StatusCreated, contact)
+}
+
+// PUT /clubfair/admin/contacts/{id} — staff only. A whole-row replace.
+func (h *ClubFairContentHandler) UpdateStaffContact(w http.ResponseWriter, r *http.Request) {
+	claims := appmw.ClubFairClaimsFrom(r.Context())
+
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	body, ok := decodeStaffContactBody(w, r)
+	if !ok {
+		return
+	}
+
+	contact, err := h.service.UpdateStaffContact(r.Context(), id, body.contact(), claims.UserID)
+	if err != nil {
+		contentError(w, err)
+		return
+	}
+	appmw.WriteJSON(w, http.StatusOK, contact)
+}
+
+// DELETE /clubfair/admin/contacts/{id} — staff only.
+func (h *ClubFairContentHandler) DeleteStaffContact(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteStaffContact(r.Context(), id); err != nil {
+		contentError(w, err)
+		return
+	}
+	appmw.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
