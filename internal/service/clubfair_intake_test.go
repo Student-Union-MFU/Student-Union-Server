@@ -7,16 +7,18 @@ import "testing"
 // either direction is expensive: too strict locks out the students the fair is
 // for, too loose lets in everyone it is not.
 
-func TestEligibleIntakeDefaultsToTheThreeYearsOnCampus(t *testing.T) {
+func TestEligibleIntakeDefaultsToTheFourYearsOnCampus(t *testing.T) {
 	t.Setenv("CLUBFAIR_INTAKE_PREFIXES", "")
 
-	for _, id := range []string{"6731503029", "6831503029", "6931503029"} {
+	for _, id := range []string{"6631503029", "6731503029", "6831503029", "6931503029"} {
 		if !eligibleIntake(id) {
 			t.Errorf("%s should be eligible with no configuration set", id)
 		}
 	}
-	// Either side of the window: 66 has graduated, 70 has not arrived.
-	for _, id := range []string{"6631503029", "7031503029"} {
+	// Either side of the window: 65 has graduated, 70 has not arrived. 66 used
+	// to sit on the graduated side of this and no longer does — a four-year
+	// degree puts the 2566 intake in its final year, which is on campus.
+	for _, id := range []string{"6531503029", "7031503029"} {
 		if eligibleIntake(id) {
 			t.Errorf("%s is outside the default intakes", id)
 		}
