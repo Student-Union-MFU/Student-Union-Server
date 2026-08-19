@@ -217,3 +217,115 @@ func (r *ClubFairContentRepository) DeleteProgramEntry(ctx context.Context, id i
 	}
 	return nil
 }
+
+// ---- Staff contacts ------------------------------------------------------
+
+// ErrStaffContactNotFound distinguishes "no such contact" from a broken query.
+var ErrStaffContactNotFound = errors.New("clubfair: staff contact not found")
+
+const staffContactColumns = `id, role, role_en, name, phone, note, note_en, sort_order`
+
+func scanStaffContact(row pgx.Row) (*model.ClubFairStaffContact, error) {
+	var c model.ClubFairStaffContact
+	err := row.Scan(
+		&c.ID, &c.Role, &c.RoleEN, &c.Name, &c.Phone,
+		&c.Note, &c.NoteEN, &c.SortOrder,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrStaffContactNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// ListStaffContacts returns the rota in reading order.
+//
+// One method, unlike the programme's — there is no published/draft split here
+// and no reason for the staff screen and the dashboard editor to see different
+// lists. A staff member calling a number the editor has already removed is
+// exactly the drift two reads would introduce.
+//
+// `sort_order, id`: the order is what staff chose, and id breaks a tie so two
+// rows sharing a rank do not swap places between reads.
+func (r *ClubFairContentRepository) ListStaffContacts(
+	ctx context.Context,
+) ([]model.ClubFairStaffContact, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT `+staffContactColumns+`
+		   FROM clubfair_staff_contact
+		  ORDER BY sort_order, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// `make`, not `var`: a nil slice marshals as `null`, which the clients read
+	// as a broken response rather than as an empty rota.
+	out := make([]model.ClubFairStaffContact, 0)
+	for rows.Next() {
+		var c model.ClubFairStaffContact
+		if err := rows.Scan(
+			&c.ID, &c.Role, &c.RoleEN, &c.Name, &c.Phone,
+			&c.Note, &c.NoteEN, &c.SortOrder,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (r *ClubFairContentRepository) CreateStaffContact(
+	ctx context.Context, c model.ClubFairStaffContact, updatedBy int,
+) (*model.ClubFairStaffContact, error) {
+	return scanStaffContact(r.db.QueryRow(ctx,
+		`INSERT INTO clubfair_staff_contact
+		     (role, role_en, name, phone, note, note_en, sort_order, updated_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		 RETURNING `+staffContactColumns,
+		c.Role, c.RoleEN, c.Name, c.Phone, c.Note, c.NoteEN, c.SortOrder, updatedBy))
+}
+
+// UpdateStaffContact replaces every editable column.
+//
+// A whole-row write, like UpdateProgramEntry and for the same reason: the staff
+// member is looking at the whole form, so a box they cleared means cleared. A
+// COALESCE-per-column update would make it impossible to remove a phone number
+// once one had been typed — which is precisely the edit that matters here, when
+// somebody's shift ends and the old number must stop being called.
+func (r *ClubFairContentRepository) UpdateStaffContact(
+	ctx context.Context, id int, c model.ClubFairStaffContact, updatedBy int,
+) (*model.ClubFairStaffContact, error) {
+	return scanStaffContact(r.db.QueryRow(ctx,
+		`UPDATE clubfair_staff_contact SET
+		     role       = $2,
+		     role_en    = $3,
+		     name       = $4,
+		     phone      = $5,
+		     note       = $6,
+		     note_en    = $7,
+		     sort_order = $8,
+		     updated_at = now(),
+		     updated_by = $9
+		 WHERE id = $1
+		 RETURNING `+staffContactColumns,
+		id, c.Role, c.RoleEN, c.Name, c.Phone, c.Note, c.NoteEN, c.SortOrder, updatedBy))
+}
+
+// DeleteStaffContact removes a row outright.
+//
+// A hard delete, like a programme entry's and unlike an announcement's. An
+// announcement is a record of what the fair was told; a contact is a fact about
+// who to call, and one that is no longer true has no history worth keeping.
+func (r *ClubFairContentRepository) DeleteStaffContact(ctx context.Context, id int) error {
+	tag, err := r.db.Exec(ctx, `DELETE FROM clubfair_staff_contact WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrStaffContactNotFound
+	}
+	return nil
+}

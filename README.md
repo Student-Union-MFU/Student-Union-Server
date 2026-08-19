@@ -328,9 +328,11 @@ Registered only when `CLUBFAIR_JWT_SECRET` is set — see
 | `DELETE` | `/clubfair/announcements/{id}` | **staff** | Soft delete |
 | `GET` | `/clubfair/booths/{id}/checkin-code` | **staff · booth owner** | The booth display polls this for its current rotating code. A booth owner reaches only its own booths — the per-row half of the check is in the service, not the middleware |
 | `POST` | `/clubfair/prizes/claim` | **staff** | Hand a prize over. Threshold re-checked server-side |
+| `GET` | `/clubfair/staff/contacts` | **staff** | The rota the website's staff screen shows. ⚠ On `/staff/…` rather than under `/admin/…` deliberately — it is the one thing on that screen a staff account must keep reaching if `/clubfair/admin/*` is ever narrowed to admins. Also the one Club Fair list that is **not** public: it is named people's phone numbers |
 | `PUT` | `/clubfair/admin/info` | **staff** | Move the fair's dates, venue and notice |
 | `GET` | `/clubfair/admin/program` | **staff** | The running order, drafts included |
 | `POST`/`PUT`/`DELETE` | `/clubfair/admin/program[/{id}]` | **staff** | Edit the running order. `PUT` is a whole-row replace |
+| `POST`/`PUT`/`DELETE` | `/clubfair/admin/contacts[/{id}]` | **staff** | Edit the rota. The read is `/clubfair/staff/contacts` above — there is one list, and a staff member calling a number the editor already removed is what two reads would eventually produce |
 | `GET` | `/clubfair/admin/booth-categories` | **staff** | The five values `booth.category` allows |
 | `POST`/`PUT`/`DELETE` | `/clubfair/admin/booths[/{id}]` | **staff** | Edit booths. `secret` is never accepted or returned; a delete is refused once anyone has scanned it |
 | `GET` | `/clubfair/admin/prizes` | **staff** | Tiers with claim counts, retired ones included |

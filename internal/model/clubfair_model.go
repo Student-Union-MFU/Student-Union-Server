@@ -249,6 +249,30 @@ type ClubFairProgramEntry struct {
 	IsPublished bool `json:"is_published"`
 }
 
+// ClubFairStaffContact is one row of the rota staff read on their own screen —
+// migration 000025.
+//
+// `Name` and `Phone` are pointers because a role is knowable before the person
+// filling it is, and a row with neither is the ordinary state of this table
+// before the Student Union has written its rota down. The website renders such a
+// row as "not filled in yet" rather than hiding it: a volunteer needs to know
+// first aid *has* an owner even while the screen does not know who.
+//
+// ⚠ Unlike every other Club Fair list, this one is not public. See the migration.
+type ClubFairStaffContact struct {
+	ID     int     `json:"id"`
+	Role   string  `json:"role"`
+	RoleEN *string `json:"role_en"`
+	Name   *string `json:"name"`
+	Phone  *string `json:"phone"`
+	Note   *string `json:"note"`
+	NoteEN *string `json:"note_en"`
+
+	// Ascending, ties broken by id. Staff read this list in the order things go
+	// wrong, which is neither alphabetical nor the order it was typed.
+	SortOrder int `json:"sort_order"`
+}
+
 // ClubFairParticipant is a student as the staff dashboard sees them.
 //
 // Built the way PublicClubFairUser is: there is no password field to forget to

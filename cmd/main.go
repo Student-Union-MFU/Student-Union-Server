@@ -577,6 +577,26 @@ func main() {
 					r.Use(requireClubFairStaff)
 					// A prize is a physical object leaving a table.
 					r.Post("/prizes/claim", clubFairFairHandler.ClaimPrize)
+
+					/*
+					   The rota the website's staff screen shows —
+					   migration 000025.
+
+					   ⚠ Here rather than under /admin, and the two are
+					   about to stop meaning the same thing. The website
+					   has made its dashboard admins-only; the matching
+					   server change is narrowing requireClubFairStaff on
+					   /clubfair/admin/* to admin, and on the day someone
+					   does that, a read living at /admin/contacts takes
+					   the staff screen down with it. This is the one
+					   thing on that screen a staff account must keep.
+
+					   ⚠ Also the one Club Fair list that is NOT public.
+					   It is named people's phone numbers, gathered so a
+					   volunteer can reach the prize desk — not so two
+					   thousand students can. See the migration.
+					*/
+					r.Get("/staff/contacts", clubFairContentHandler.StaffContacts)
 				})
 
 				/* ----------------------------------------------------
@@ -596,6 +616,14 @@ func main() {
 					// The fair itself. PUT, not PATCH: the dashboard shows
 					// the whole thing, so a cleared box means cleared.
 					r.Put("/info", clubFairContentHandler.SaveInfo)
+
+					// Staff contact writes. The read stays on
+					// /clubfair/staff/contacts — there is one rota, and a
+					// staff member calling a number the editor already
+					// removed is what two reads would eventually produce.
+					r.Post("/contacts", clubFairContentHandler.CreateStaffContact)
+					r.Put("/contacts/{id}", clubFairContentHandler.UpdateStaffContact)
+					r.Delete("/contacts/{id}", clubFairContentHandler.DeleteStaffContact)
 
 					// Drafts included, unlike the public /program.
 					r.Get("/program", clubFairContentHandler.ProgramForAdmin)
