@@ -411,6 +411,17 @@ and uploads twenty minutes later has a code the server refuses, and the honest
 answer is a `409` telling them to scan again rather than widening the window to
 twenty minutes for everyone.
 
+It is also in direct tension with App Store review, which asks for a QR **image**
+and cannot be sent one that dies three minutes later — that is what rejected iOS
+1.0(3) under guideline 2.1(a). `CLUBFAIR_REVIEW_BOOTH_ID` plus
+`CLUBFAIR_REVIEW_CODE_UNTIL` let **one** booth's codes arrive at any age until a
+stated instant. The HMAC is still verified, so the only code this admits is the
+one already minted into the image Apple has; every other booth keeps the
+three-minute rule; and it fails closed if either variable is missing or
+unreadable. Point the date before the fair opens and it lapses by itself: an
+exemption that has to be switched off by hand is one that is still on during the
+event.
+
 #### Prize tiers
 
 Two tiers, `Prize 1` at 15 booths and `Prize 2` at 28, and the names are meant to
@@ -585,6 +596,8 @@ from `.env`. They must agree, or `migrate` cannot log in on a fresh volume.
 | `WBW_EMERGENCY_PHONE` | Central number, returned with `/wbw/me/progress`. Empty = the app uses its built-in default | |
 | `CLUBFAIR_JWT_SECRET` | **Separate** Club Fair key. Unset = `/clubfair` not registered | |
 | `CLUBFAIR_CHECKIN_MAX_AGE_SECONDS` | How old a booth code may be — also the shared-screenshot window | `180` |
+| `CLUBFAIR_REVIEW_BOOTH_ID` | App Review only. The one booth whose codes may arrive at any age, so a QR image in a submission keeps verifying. Needs `CLUBFAIR_REVIEW_CODE_UNTIL` set too, and never bypasses the HMAC | |
+| `CLUBFAIR_REVIEW_CODE_UNTIL` | RFC3339 instant the exemption above lapses. Set it before the fair opens | |
 | `CLUBFAIR_INTAKE_PREFIXES` | Which intakes may **open a new account**, as leading student-id digits — `69` is the 2569 entry, so the default is the three years on campus. `*` accepts any. Existing accounts sign in regardless, so nobody is locked out retrospectively | `67,68,69` |
 | `WBW_DB_TESTS` · `WBW_TEST_DSN` | Turn the real-Postgres tests on; see [Tests](#tests) | `1` |
 
