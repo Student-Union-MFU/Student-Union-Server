@@ -543,6 +543,126 @@ func (h *ClubFairAdminHandler) SetParticipantPassword(w http.ResponseWriter, r *
 	appmw.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// ---- A participant's stamps ----------------------------------------------
+
+/*
+The MFU333 screen's stamp editor. All three are admin-only; the gate is in
+ClubFairAdminService, which is also where the reasoning lives.
+
+Every one of them answers with the **whole list read back**, not with the row
+that changed. Same rule as SetParticipantBooths above and for the same reason: a
+dashboard that renders what it hoped it wrote is how a screen ends up disagreeing
+with the database. It costs one extra query on a table indexed by (user_id,
+booth_id) and it means the count beside the list is never a number the browser
+worked out for itself.
+*/
+
+// participantCheckInsResponse writes the list plus its count.
+//
+// `visited` is sent even though the client could take len() of the array,
+// because the same number appears on the roster row (ClubFairParticipant.visited)
+// and the two being computed in different places is how they drift.
+func (h *ClubFairAdminHandler) participantCheckInsResponse(
+	w http.ResponseWriter, r *http.Request, id int, status int,
+) {
+	claims := appmw.ClubFairClaimsFrom(r.Context())
+
+	list, err := h.service.ParticipantCheckIns(r.Context(), id, claims.Role)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	appmw.WriteJSON(w, status, map[string]any{
+		"checkins": list,
+		"visited":  len(list),
+	})
+}
+
+// GET /clubfair/admin/participants/{id}/checkins — admin only.
+func (h *ClubFairAdminHandler) ParticipantCheckIns(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil || id <= 0 {
+		appmw.WriteError(w, http.StatusBadRequest, "รหัสบัญชีไม่ถูกต้อง")
+		return
+	}
+	h.participantCheckInsResponse(w, r, id, http.StatusOK)
+}
+
+// POST /clubfair/admin/participants/{id}/checkins — admin only.
+//
+// Body is `{ "booth_id": 12 }`. A booth the student already has is a 200, not a
+// 409: the admin asked for a state and the state holds. Only the `created` flag
+// tells them apart, and it is there so the dashboard can say "already had it"
+// rather than flashing a success on a click that did nothing.
+//
+// ⚠ This is the one path in the system that writes a stamp without an HMAC
+// payload proving the student stood at the booth. That is the feature — see the
+// repository — and it is why the service refuses anyone below admin.
+func (h *ClubFairAdminHandler) AddParticipantCheckIn(w http.ResponseWriter, r *http.Request) {
+	claims := appmw.ClubFairClaimsFrom(r.Context())
+
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil || id <= 0 {
+		appmw.WriteError(w, http.StatusBadRequest, "รหัสบัญชีไม่ถูกต้อง")
+		return
+	}
+
+	var body struct {
+		BoothID int `json:"booth_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		appmw.WriteError(w, http.StatusBadRequest, "รูปแบบคำขอไม่ถูกต้อง")
+		return
+	}
+
+	created, err := h.service.AddParticipantCheckIn(
+		r.Context(), id, body.BoothID, claims.Role,
+	)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+
+	// 201 only when something was written. A repeat is a 200, so a client that
+	// reads the status rather than the body still sees the difference.
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	h.participantCheckInsResponse(w, r, id, status)
+}
+
+// DELETE /clubfair/admin/participants/{id}/checkins/{boothID} — admin only.
+//
+// Keyed on the booth rather than on the check-in row's own id, matching the
+// UNIQUE the table is built around and the way the screen thinks: an admin
+// unticks a booth. Removing one the student does not have is a 200 — the state
+// they asked for already holds.
+//
+// ⚠ It does not reach a phone already showing a prize code. See the service.
+func (h *ClubFairAdminHandler) RemoveParticipantCheckIn(w http.ResponseWriter, r *http.Request) {
+	claims := appmw.ClubFairClaimsFrom(r.Context())
+
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil || id <= 0 {
+		appmw.WriteError(w, http.StatusBadRequest, "รหัสบัญชีไม่ถูกต้อง")
+		return
+	}
+	boothID, err := strconv.Atoi(chi.URLParam(r, "boothID"))
+	if err != nil || boothID <= 0 {
+		appmw.WriteError(w, http.StatusBadRequest, "รหัสบูธไม่ถูกต้อง")
+		return
+	}
+
+	if _, err := h.service.RemoveParticipantCheckIn(
+		r.Context(), id, boothID, claims.Role,
+	); err != nil {
+		adminError(w, err)
+		return
+	}
+	h.participantCheckInsResponse(w, r, id, http.StatusOK)
+}
+
 // ---- The admin console ---------------------------------------------------
 
 // The console is one file, embedded so the Dockerfile's single-binary build

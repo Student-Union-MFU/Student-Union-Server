@@ -118,6 +118,39 @@ type ClubFairCheckIn struct {
 	ServerReceivedAt time.Time `json:"server_received_at"`
 }
 
+// ClubFairAdminCheckIn is one stamp as the staff dashboard reads it: the same
+// row as ClubFairCheckIn, plus enough of the booth to render without a second
+// request.
+//
+// A separate shape rather than fields added to ClubFairCheckIn, because that one
+// goes to the student app on every sync and the booth's name is already in the
+// roster it holds. This one is read once, by one admin, looking at one person —
+// so it carries the name and the code and saves the dashboard cross-referencing
+// twenty-eight booths against a list of ids to draw a table.
+//
+// ⚠ **Nothing here says whether a stamp was scanned or granted by hand.** There
+// is no column for it: an admin's addition is an ordinary row and is
+// indistinguishable from a student's scan afterwards. That was a deliberate
+// choice — see ClubFairAdminService.AddParticipantCheckIn — and it is the first
+// thing to change if a prize is ever disputed.
+type ClubFairAdminCheckIn struct {
+	ID      int64 `json:"id"`
+	BoothID int   `json:"booth_id"`
+
+	// The booth as the signage names it. `booth_code` is null on a booth that
+	// has not been placed on the floor yet, which is why it is a pointer.
+	BoothName   string  `json:"booth_name"`
+	BoothNameEn *string `json:"booth_name_en"`
+	BoothCode   *string `json:"booth_code"`
+	Zone        *string `json:"zone"`
+
+	// Both instants, for the same reason the student-facing row carries both:
+	// they diverge by however long the student was out of signal, and only the
+	// second is trustworthy. A dispute is settled on server_received_at.
+	DeviceTime       time.Time `json:"device_time"`
+	ServerReceivedAt time.Time `json:"server_received_at"`
+}
+
 // ClubFairAnnouncement is one post in the channel, with its reactions rolled up.
 type ClubFairAnnouncement struct {
 	ID       int64  `json:"id"`

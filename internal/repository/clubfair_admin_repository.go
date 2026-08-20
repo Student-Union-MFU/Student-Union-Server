@@ -548,6 +548,142 @@ func (r *ClubFairAdminRepository) SetParticipantPassword(
 	return nil
 }
 
+// ---- A participant's stamps ----------------------------------------------
+
+/*
+Reading and editing somebody else's check-ins.
+
+## Why these are here and not on ClubFairFairRepository
+
+That one owns the student-facing side: RecordCheckIn verifies an HMAC payload
+and ListCheckIns answers "my own stamps". Both are about the caller. These three
+are about *somebody else*, are reachable only by an admin, and want a different
+shape — the dashboard renders a table of booth names, so the read joins `booth`
+rather than returning bare ids for the client to cross-reference.
+
+Keeping them apart also keeps the student path honest: nothing in this file is
+reachable without the admin gate in the service above it, so there is no route by
+which a phone reaches an unverified insert.
+
+## The insert does not go through the check-in scheme, and cannot
+
+CLAUDE.md §6: a booth's 32-byte secret never leaves the server, the app posts a
+scanned payload verbatim, and the server verifies it. An admin fixing a stamp has
+no payload — the whole reason they are doing it is that the scan did not happen
+or did not land. So this writes `booth_id` directly.
+
+That is the point of the feature and also its risk, and the risk is worth being
+explicit about: **this is the one path in the system that mints a stamp without
+proof a student stood at a booth.** It is admin-only for that reason, not because
+the data is sensitive.
+*/
+
+// BoothExists answers whether a booth id is real.
+//
+// Here rather than borrowed from ClubFairFairRepository so the service above can
+// tell an admin *which* id was wrong. Without it the insert's foreign key does
+// the refusing, and a constraint violation reaches the handler as an
+// unclassified error — which is a 500 and the words "ดำเนินการไม่สำเร็จ" for
+// what is simply a booth that does not exist. That was the actual behaviour
+// until this was added, and the message told the admin nothing they could act
+// on.
+func (r *ClubFairAdminRepository) BoothExists(ctx context.Context, boothID int) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM booth WHERE id = $1)`, boothID).Scan(&exists)
+	return exists, err
+}
+
+// ListParticipantCheckIns returns one student's stamps with their booths, oldest
+// first — the order they walked the floor.
+//
+// LEFT JOIN, not JOIN. `clubfair_checkin.booth_id` is ON DELETE CASCADE so a
+// deleted booth takes its stamps with it and the join can never miss... today.
+// A LEFT JOIN costs nothing here and means a future where that changes shows the
+// admin a row with no name rather than silently dropping a stamp the student
+// still has.
+func (r *ClubFairAdminRepository) ListParticipantCheckIns(
+	ctx context.Context, userID int,
+) ([]model.ClubFairAdminCheckIn, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT c.id, c.booth_id,
+		       COALESCE(b.name, ''), b.name_en, b.booth_code, b.zone,
+		       c.device_time, c.server_received_at
+		  FROM clubfair_checkin c
+		  LEFT JOIN booth b ON b.id = c.booth_id
+		 WHERE c.user_id = $1
+		 ORDER BY c.server_received_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]model.ClubFairAdminCheckIn, 0)
+	for rows.Next() {
+		var c model.ClubFairAdminCheckIn
+		if err := rows.Scan(
+			&c.ID, &c.BoothID,
+			&c.BoothName, &c.BoothNameEn, &c.BoothCode, &c.Zone,
+			&c.DeviceTime, &c.ServerReceivedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// AddParticipantCheckIn stamps a booth for a student who did not scan it, and
+// reports whether the row is new.
+//
+// `created == false` means the student already had that booth. That is not an
+// error — an admin clicking a booth that is already stamped has asked for a
+// state that already holds — so the caller reports it and moves on rather than
+// failing. Same reasoning as RecordCheckIn's idempotency, arrived at from the
+// other side.
+//
+// ⚠ **client_id is minted by Postgres, not by the caller.** The column is UNIQUE
+// because it is the app's idempotency key, minted on the phone before a scan
+// goes out; there is no phone here, so a value has to come from somewhere and
+// `gen_random_uuid()` is the one source that cannot collide with a real one. Do
+// not be tempted to derive it from the user and booth ids — a deterministic
+// client_id would make a re-add after a delete collide with its own deleted row.
+//
+// device_time is set to now() alongside server_received_at, because the honest
+// answer to "when did the phone say this happened" is "no phone said anything".
+// They will be equal on every hand-entered row, which is as close to a marker as
+// this schema has — see the note on ClubFairAdminCheckIn.
+func (r *ClubFairAdminRepository) AddParticipantCheckIn(
+	ctx context.Context, userID, boothID int,
+) (created bool, err error) {
+	tag, err := r.db.Exec(ctx, `
+		INSERT INTO clubfair_checkin (client_id, user_id, booth_id, device_time)
+		VALUES (gen_random_uuid(), $1, $2, now())
+		ON CONFLICT DO NOTHING`, userID, boothID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// DeleteParticipantCheckIn removes one stamp and reports whether there was one.
+//
+// Keyed on (user_id, booth_id) rather than on the check-in's own id, matching
+// the UNIQUE constraint the table is built around and the way the dashboard
+// thinks: an admin unticks *a booth*, not a row they have the primary key of.
+// It also makes the call idempotent — a second delete is `false`, not a 500.
+func (r *ClubFairAdminRepository) DeleteParticipantCheckIn(
+	ctx context.Context, userID, boothID int,
+) (removed bool, err error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM clubfair_checkin WHERE user_id = $1 AND booth_id = $2`,
+		userID, boothID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // ---- The fair at a glance ------------------------------------------------
 
 // Dashboard reads the four counts in one round trip, the way WBW's does.
