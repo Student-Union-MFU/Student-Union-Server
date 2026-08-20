@@ -438,6 +438,114 @@ func (s *ClubFairAdminService) SetParticipantPassword(
 	return s.repo.SetParticipantPassword(ctx, id, string(hash))
 }
 
+// ---- A participant's stamps ----------------------------------------------
+
+/*
+Editing somebody else's stamp count, from the MFU333 screen.
+
+## Admin only, and the reason is the prize rather than the privacy
+
+Every other read on this dashboard is staff-level, and this one is not. A stamp
+is what a prize is measured in: adding fifteen of them hands out an MFU333 point,
+and removing one takes back an entitlement a student can see in their own app and
+believes they earned. That is the same weight as moving a role or setting
+somebody's password, both of which are already an admin's alone, and it should
+not be reachable by everyone working a shift at the desk.
+
+It deliberately does **not** refuse an admin's own account, which the password
+endpoint does. The reason that one refuses is that it is account takeover; this
+is a stamp count, an admin correcting their own is not a way to seize anything,
+and the fair is one weekend — the person fixing the data is quite likely also
+the person who lost a scan.
+
+## What it cannot do, and what to say when it happens
+
+⚠ **There is no revocation, so this does not reach a phone that is already
+holding a prize code.** Reaching the threshold unlocks a claim code in the app;
+removing a stamp afterwards drops the count below it again, but nothing pushes
+that to a device and nothing invalidates a code already on screen. A student
+whose stamp is removed at 16:00 can still be standing at the desk with the code
+at 16:05. If a stamp is being removed *because* a prize is disputed, the desk has
+to be told separately — the data being right is not the same as the prize not
+having gone out.
+*/
+
+// ParticipantCheckIns lists one student's stamps for the dashboard. Admin only.
+//
+// A read behind the same gate as the writes below, not because a stamp list is a
+// secret — the student sees it in their own app — but because this screen is
+// where the writes are, and a read staff can reach beside two buttons they
+// cannot is a worse thing to explain than one door.
+func (s *ClubFairAdminService) ParticipantCheckIns(
+	ctx context.Context, userID int, actorRole string,
+) ([]model.ClubFairAdminCheckIn, error) {
+	if actorRole != ClubFairRoleAdmin {
+		return nil, ErrClubFairNotAdmin
+	}
+	// Confirms the account exists, so a bad id is a 404 rather than an empty
+	// list — "this student has no stamps" and "there is no such student" are
+	// different answers and the dashboard renders them differently.
+	if _, err := s.repo.GetParticipant(ctx, userID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListParticipantCheckIns(ctx, userID)
+}
+
+// AddParticipantCheckIn stamps a booth for a student who did not scan it.
+//
+// Both existence checks are here rather than left to the foreign keys. A
+// violation would come back as a constraint error naming a column, and the two
+// cases want different words on screen: an id that is not a student, and an id
+// that is not a booth.
+//
+// Returns whether a row was actually written. False means the student already
+// had it, which is a success — see the repository.
+func (s *ClubFairAdminService) AddParticipantCheckIn(
+	ctx context.Context, userID, boothID int, actorRole string,
+) (bool, error) {
+	if actorRole != ClubFairRoleAdmin {
+		return false, ErrClubFairNotAdmin
+	}
+	if _, err := s.repo.GetParticipant(ctx, userID); err != nil {
+		return false, err
+	}
+	/*
+	 * The booth is checked here rather than left to the foreign key, and the
+	 * difference is what the admin reads. A FK violation arrives as an
+	 * unclassified pgx error, which the handler cannot map — so an id that is
+	 * simply not a booth came back as a 500 and "ดำเนินการไม่สำเร็จ", a message
+	 * that names nothing and suggests the server broke. It is a 404 naming the
+	 * booth now.
+	 */
+	if boothID <= 0 {
+		return false, repository.ErrBoothNotFound
+	}
+	exists, err := s.repo.BoothExists(ctx, boothID)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, repository.ErrBoothNotFound
+	}
+	return s.repo.AddParticipantCheckIn(ctx, userID, boothID)
+}
+
+// RemoveParticipantCheckIn takes a stamp back.
+//
+// Returns whether there was one to remove. False is not an error for the same
+// reason it is not on the add: the admin asked for a state, and the state holds.
+func (s *ClubFairAdminService) RemoveParticipantCheckIn(
+	ctx context.Context, userID, boothID int, actorRole string,
+) (bool, error) {
+	if actorRole != ClubFairRoleAdmin {
+		return false, ErrClubFairNotAdmin
+	}
+	if _, err := s.repo.GetParticipant(ctx, userID); err != nil {
+		return false, err
+	}
+	return s.repo.DeleteParticipantCheckIn(ctx, userID, boothID)
+}
+
 // ---- The fair at a glance ------------------------------------------------
 
 // Dashboard is a straight passthrough: four counts with no rule attached to

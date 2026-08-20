@@ -667,6 +667,38 @@ func main() {
 					// sign in, and it does not end a live session.
 					r.Put("/participants/{id}/password", clubFairAdminHandler.SetParticipantPassword)
 
+					/*
+					   One student's stamps, read and edited from the
+					   dashboard's MFU333 screen.
+
+					   ⚠ Admin-only, and enforced in
+					   ClubFairAdminService rather than by an
+					   r.With(requireClubFairAdmin) here — the same
+					   arrangement the role change and the password
+					   reset use, and for the same reason: the rule is
+					   about the *edit*, not about the route, and
+					   putting it in the service is what stops a second
+					   caller reaching the repository around the
+					   middleware.
+
+					   The write is the reason for the gate. A stamp is
+					   what a prize is measured in, so adding them hands
+					   out an MFU333 point and removing one takes back an
+					   entitlement the student can see in their own app.
+					   That is the weight of a role change, not of a
+					   booth assignment.
+
+					   ⚠ POST here is the ONLY way into clubfair_checkin
+					   that does not verify an HMAC payload from a booth
+					   — see CLAUDE.md §6 and the repository. It exists
+					   because an admin fixing a missed scan has no
+					   payload to present, which is the whole point, and
+					   it is why nothing below admin may call it.
+					*/
+					r.Get("/participants/{id}/checkins", clubFairAdminHandler.ParticipantCheckIns)
+					r.Post("/participants/{id}/checkins", clubFairAdminHandler.AddParticipantCheckIn)
+					r.Delete("/participants/{id}/checkins/{boothID}", clubFairAdminHandler.RemoveParticipantCheckIn)
+
 					// The fair at a glance, for the console at
 					// /clubfair/dashboard. Admin-only, so gated with
 					// r.With rather than by its own r.Route — a second
