@@ -50,6 +50,38 @@ func (r *WBWCheckpointRepository) List(ctx context.Context) ([]model.Checkpoint,
 	return list, rows.Err()
 }
 
+// ListForParticipant — ฐานทุกใบสำหรับผู้เข้าร่วม
+//
+// คืนทั้งฐานกิจกรรมและจุดบริการ ไม่กรองด้วย requires_checkin — แอปแยกเองจาก `type` กับ
+// `sequence` และการคืนครบทำให้ไม่ต้องแก้ endpoint อีกรอบตอนอยากโชว์จุดห้องน้ำบนแผนที่
+//
+// เรียงเหมือน List ของแอดมิน (sequence ก่อน แล้วค่อย id) เพื่อให้ทั้งสองฝั่งเห็นลำดับเดียวกัน —
+// จุดบริการไม่มี sequence จึงตกไปท้ายด้วย NULLS LAST
+func (r *WBWCheckpointRepository) ListForParticipant(ctx context.Context) ([]model.ParticipantCheckpoint, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT checkpoint_id, sequence, name, name_en, activity_name, activity_name_en,
+		       type::text, requires_checkin
+		  FROM checkpoint
+		 ORDER BY sequence NULLS LAST, checkpoint_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// เริ่มจาก slice ว่าง ไม่ใช่ nil — nil เข้ารหัสเป็น `null` ไม่ใช่ `[]` แล้วตัวถอดรหัสฝั่งแอป
+	// ที่รอ array จะพังทั้งก้อน (แพทเทิร์นเดียวกับ List ข้างบน)
+	list := []model.ParticipantCheckpoint{}
+	for rows.Next() {
+		var c model.ParticipantCheckpoint
+		if err := rows.Scan(&c.ID, &c.Sequence, &c.Name, &c.NameEn,
+			&c.ActivityName, &c.ActivityNameEn, &c.Type, &c.RequiresCheckin); err != nil {
+			return nil, err
+		}
+		list = append(list, c)
+	}
+	return list, rows.Err()
+}
+
 // BasesOverview — เฉพาะฐานที่ต้องเช็คอิน พร้อมจำนวนคนที่เช็คอินแล้ว
 func (r *WBWCheckpointRepository) BasesOverview(ctx context.Context) ([]model.BaseOverview, error) {
 	rows, err := r.db.Query(ctx, `

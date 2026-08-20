@@ -211,6 +211,26 @@ type Checkpoint struct {
 	Staff    []StaffRef `json:"staff"`
 }
 
+// ParticipantCheckpoint — ฐานหนึ่งใบตามที่ผู้เข้าร่วมเห็น (GET /wbw/checkpoints)
+//
+// ต่างจาก `Checkpoint` ของแอดมินตรงที่ไม่มีรายชื่อเจ้าหน้าที่ และมีชื่อกิจกรรมสองภาษามาด้วย —
+// แอปเอาไปขึ้นบนการ์ดฐานในแท็บแผนที่ ซึ่งเดิมรู้ชื่อเฉพาะฐานที่เช็คอินไปแล้ว (จาก /me/progress
+// ที่คืนแค่ checked_in) ฐานที่ยังไม่ไปถึงจึงขึ้นว่า "ฐานที่ N" ทั้งที่ชื่อมีอยู่ในตารางนี้ตลอด
+//
+// **ไม่มี lat/lng โดยตั้งใจ** — ตำแหน่งหมุดบนแผนที่ 3D มาจากตัวไฟล์โมเดล ส่งพิกัดไปด้วยจะมี
+// แหล่งความจริงสองที่แข่งกัน ซึ่งเป็นกับดักที่เพิ่งทำให้พิกัดในตารางนี้ผิดมา 8 แถว (ดู migration
+// 000026) · ฝั่งที่ต้องใช้พิกัดจริง ๆ คือ NearestCheckpoint ของ SOS ซึ่งคำนวณบนเซิร์ฟเวอร์อยู่แล้ว
+type ParticipantCheckpoint struct {
+	ID              int     `json:"id"`
+	Sequence        *int    `json:"sequence"`
+	Name            string  `json:"name"`
+	NameEn          *string `json:"name_en"`
+	ActivityName    *string `json:"activity_name"`
+	ActivityNameEn  *string `json:"activity_name_en"`
+	Type            string  `json:"type"`
+	RequiresCheckin bool    `json:"requires_checkin"`
+}
+
 // CheckpointPatched — response ของ PATCH ไม่มี key staff (ตามของเดิม)
 type CheckpointPatched struct {
 	ID       int     `json:"id"`

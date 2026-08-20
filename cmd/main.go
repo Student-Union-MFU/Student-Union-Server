@@ -151,6 +151,8 @@ func main() {
 	// กลางไปด้วยเพราะ /me/progress ถูก poll ทุก 60 วิ เป็นจุดที่แอป cache เบอร์ไว้ก่อนเกิดเหตุ
 	wbwProgressService := service.NewWBWProgressService(wbwCheckpointRepo, emergencyPhone)
 	wbwProgressHandler := handler.NewWBWProgressHandler(wbwProgressService)
+	wbwCheckpointService := service.NewWBWCheckpointService(wbwCheckpointRepo)
+	wbwCheckpointHandler := handler.NewWBWCheckpointHandler(wbwCheckpointService)
 
 	wbwFeedbackRepo := repository.NewWBWFeedbackRepository(pool)
 	wbwFeedbackService := service.NewWBWFeedbackService(wbwFeedbackRepo)
@@ -400,6 +402,12 @@ func main() {
 		r.With(requireAuth).Get("/me", wbwAdminHandler.Me)
 		// แก้ได้เฉพาะรูปตัวเอง — ฟิลด์อื่นเป็นของ admin (ดู UpdateOwnPhoto)
 		r.With(requireAuth).Patch("/me", wbwAdminHandler.PatchMe)
+		// รายการฐานทั้งงาน — **ไม่ใช่ของแอดมิน** ของแอดมินที่ /admin/checkpoints คืนรายชื่อ
+		// เจ้าหน้าที่ประจำฐานมาด้วย ซึ่งผู้เข้าร่วมไม่ควรได้ · ตัวนี้คืนแค่ชื่อ/กิจกรรม/ชนิด
+		//
+		// requireAuth ไม่ใช่เปิดสาธารณะ: แท็บแผนที่ที่เรียกมันอยู่หลังล็อกอินอยู่แล้ว จึงไม่มีเหตุ
+		// ให้เปิดกว้างกว่าที่ผู้ใช้จริงต้องการ (ต่างจาก /capacity ที่หน้าสมัครเรียกก่อนล็อกอิน)
+		r.With(requireAuth).Get("/checkpoints", wbwCheckpointHandler.List)
 		// ความคืบหน้าเช็คอินของตัวเอง — แอปใช้คุมขั้นต้นไม้ที่หน้า Home
 		r.With(requireAuth).Get("/me/progress", wbwProgressHandler.MyProgress)
 		// ความเห็นต่อฐาน — ผู้เข้าร่วมส่งของตัวเอง
