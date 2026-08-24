@@ -6,14 +6,14 @@ import (
 	"su-server/internal/model"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type StepsRepository struct {
-	db *pgx.Conn
+	db *pgxpool.Pool
 }
 
-func NewStepsRepository(db *pgx.Conn) *StepsRepository {
+func NewStepsRepository(db *pgxpool.Pool) *StepsRepository {
 	return &StepsRepository{db: db}
 }
 

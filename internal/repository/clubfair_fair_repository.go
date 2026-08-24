@@ -207,21 +207,34 @@ func (r *ClubFairFairRepository) Progress(ctx context.Context, userID int) (*mod
 		return nil, err
 	}
 
-	rank, err := r.rank(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-
 	prizes, err := r.prizeTiers(ctx, userID, len(boothIDs))
 	if err != nil {
 		return nil, err
 	}
 
+	// Rank is deliberately left nil — [ClubFairFairRepository.rank] is NOT called
+	// here any more.
+	//
+	// The standing is a retired feature, and computing it cost more than
+	// everything else on this endpoint combined. Its query cannot use an index at
+	// all: the inner SELECT has no WHERE, so Postgres scanned every row of
+	// clubfair_checkin, grouped it by user and sorted the whole result to number
+	// the positions, and only then threw away all but one row. A window function
+	// blocks predicate pushdown, so `WHERE user_id = $1` on the outside cannot
+	// make any of that work smaller. Home polls this endpoint, so the cost
+	// repeated per poll per student and grew with every stamp anyone earned — at
+	// the fair on 2026-08-22 (~3,000 students) it was the measured reason the
+	// server slowed at peak.
+	//
+	// The field stays in the response rather than being deleted: it has no
+	// `omitempty`, so clients keep receiving `"rank": null`, which is the value
+	// they already render as an em dash for a student with no stamps. Removing
+	// the key outright would be a breaking change for a shipped Android app.
 	return &model.ClubFairProgress{
 		Visited:         len(boothIDs),
 		Total:           total,
 		VisitedBoothIDs: boothIDs,
-		Rank:            rank,
+		Rank:            nil,
 		Prizes:          prizes,
 	}, nil
 }
@@ -251,6 +264,19 @@ func (r *ClubFairFairRepository) visitedBoothIDs(ctx context.Context, userID int
 // running, and the app renders an em dash. RANK() rather than ROW_NUMBER() so
 // two students on the same count share a position instead of one of them being
 // arbitrarily ahead.
+//
+// UNUSED ON PURPOSE — kept, not deleted, because the standing is wanted again
+// for the WBW website and app. The logic above is the part worth keeping; the
+// query underneath it is not.
+//
+// ⚠ Do not wire this back into a per-request path as it stands. It scans the
+// whole of clubfair_checkin, groups it and sorts every user on every single
+// call — see the comment in [ClubFairFairRepository.Progress] for why that
+// became the server's bottleneck at the 2026-08-22 fair. Whoever revives this
+// for WBW should compute the whole ranking once behind a short TTL cache (the
+// pattern in wbw_admin_handler.go's schoolsCache) or keep a running count in a
+// table, and read one student's position out of that. A standing is social, not
+// transactional: it can be seconds stale and nobody can tell.
 func (r *ClubFairFairRepository) rank(ctx context.Context, userID int) (*int, error) {
 	var rank *int
 	err := r.db.QueryRow(ctx,

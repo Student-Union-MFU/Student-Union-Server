@@ -383,7 +383,7 @@ cf-zones: ## The three areas in signage order (public)
 cf-me: ## Own profile
 	http GET $(CF)/me $(AUTH)
 
-cf-progress: ## Count, visited booths, rank and prize tiers
+cf-progress: ## Count, visited booths and prize tiers (rank is retired — always null)
 	http GET $(CF)/progress $(AUTH)
 
 # The three that exist so no client has to hold its own copy of this data.

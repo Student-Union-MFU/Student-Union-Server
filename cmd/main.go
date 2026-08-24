@@ -63,14 +63,14 @@ func main() {
 		AllowCredentials: true,
 	}))
 
-	db, err := config.ConnectDB()
-	if err != nil {
-		slog.Error("DB connection failed:", "err", err)
-	} else {
-		slog.Info("DB CONNECTED")
-	}
-
 	// ใช้ connection pool ไม่ใช่ *pgx.Conn เดี่ยว — conn เดียวไม่ปลอดภัยเมื่อมี request พร้อมกัน
+	//
+	// เมื่อก่อนตรงนี้เปิด *pgx.Conn เดี่ยวอีกเส้น (config.ConnectDB) แล้วแจกให้ repository
+	// ชุดเก่าของ SU สี่ตัว — event, user, step, leaderboard · pgx เขียนไว้ชัดว่า *pgx.Conn
+	// "is not safe for concurrent usage" และไม่มีล็อกข้างในเลย สอง request ที่เข้ามาพร้อมกัน
+	// จึงเขียนทับกันบนสายเดียวกันได้จริง ผลที่ได้คือแถวผิดตัว/decode พัง ไม่ใช่ error ที่อ่านออก
+	// · แถม ConnectDB ล้มแล้วแค่ log ต่อ ไม่ยอมตาย ทุก request ของสี่เส้นนั้นจึง nil panic
+	// ทีละใบ · ตอนนี้ทั้งสี่ตัวใช้ pool ร่วมกับที่เหลือแล้ว ไม่ได้เพิ่ม connection สักเส้น
 	pool, err := config.ConnectPool(context.Background())
 	if err != nil {
 		slog.Error("pool connection failed", "err", err)
@@ -79,7 +79,7 @@ func main() {
 	defer pool.Close()
 	slog.Info("POOL CONNECTED")
 
-	eventRepository := repository.NewEventRepository(db)
+	eventRepository := repository.NewEventRepository(pool)
 	eventService := service.NewEventService(eventRepository)
 	eventHandler := handler.NewEventHandler(eventService)
 
@@ -87,7 +87,7 @@ func main() {
 	boothService := service.NewBoothService(boothRepository)
 	boothHandler := handler.NewBoothHandler(boothService)
 
-	userRepository := repository.NewUserRepository(db)
+	userRepository := repository.NewUserRepository(pool)
 	userService := service.NewUserService(userRepository)
 	userHandler := handler.NewUserHandler(userService)
 
@@ -96,13 +96,17 @@ func main() {
 	oauthService := service.NewOAuthService(userService)
 	oauthHandler := handler.NewOAuthHandler(oauthService, jwtService)
 
-	stepRepository := repository.NewStepsRepository(db)
+	stepRepository := repository.NewStepsRepository(pool)
 	stepService := service.NewStepsService(stepRepository)
 	stepHandler := handler.NewStepsHandler(stepService)
 
-	leaderboardRepository := repository.NewLeaderboardRepository(db)
+	leaderboardRepository := repository.NewLeaderboardRepository(pool)
 	leaderboardService := service.NewLeaderboardService(leaderboardRepository)
 	leaderboardHandler := handler.NewLeaderboardHandler(leaderboardService)
+
+	// Reads pool.Stat() straight off the pool — no repository, no service, and
+	// deliberately so. See the comment block on DBPoolHandler.
+	dbPoolHandler := handler.NewDBPoolHandler(pool)
 
 	// ---------- WBW (เดินรอบดอย) ----------
 	wbwTokens := service.NewWBWTokenService()
@@ -275,6 +279,17 @@ func main() {
 				r.Post("/reset", leaderboardHandler.Reset)
 			})
 		})
+
+		// Operational, not a product feature — the live state of the one pool
+		// every product shares. It lives under /su-server because that is where
+		// the staff identity is, but the numbers it reports cover WBW and Club
+		// Fair traffic too.
+		//
+		// Staff-only: pool headroom tells anyone probing how close the server is
+		// to starving. Read it during load, not after — the counters are
+		// cumulative since boot, so a quiet morning dilutes a bad afternoon.
+		r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff()).
+			Get("/admin/db-pool", dbPoolHandler.Stats)
 	})
 
 	// ---------- Club Fair ----------
@@ -337,9 +352,19 @@ func main() {
 			// พร้อมกันหลักพันจะเผา CPU จนล่ม · จำกัดจำนวนที่ประมวลผลพร้อมกัน ที่เหลือเข้าคิว
 			// (backlog) รอถึง timeout แล้วค่อยตอบ 429 — เป็นการ "หน่วง" ไม่ใช่ "ปฏิเสธ"
 			// throughput ที่ 40 พร้อมกัน ≈ 500 req/s ยังเหลือเฟือ · ปรับผ่าน env ได้
+			//
+			// backlog 2500 (เดิม 2000) — ความจุจริงคือ limit + backlog = 2540 คน
+			// ที่ค้างในระบบได้พร้อมกัน (chi สร้าง backlogTokens ขนาดนั้น) ที่เกินไปโดน
+			// 429 ทันทีแบบไม่เข้าคิว · เพดานที่ตั้งได้ไม่ใช่ "ยิ่งเยอะยิ่งดี" แต่คือเท่าที่
+			// ระบายทันภายใน backlogTimeout (25 วิ) — คิวที่ยาวกว่านั้นแปลว่าคนท้ายแถว
+			// รอครบ 25 วิแล้วโดนปฏิเสธอยู่ดี ซึ่งแย่กว่าโดน 429 ตั้งแต่แรก · ที่ 40
+			// พร้อมกันเราระบายได้เกิน 100 req/s แน่ ๆ ดังนั้น 2500 ยังระบายทัน
+			//
+			// ⚠ ค่านี้เป็นของ "แต่ละกลุ่ม" ไม่ใช่ของทั้งเซิร์ฟเวอร์ — /clubfair/auth
+			// เรียก r.Use แยกอีกชุด จึงได้โควตา 2540 ของตัวเองต่างหาก
 			r.Use(middleware.ThrottleBacklog(
 				envInt("AUTH_THROTTLE_LIMIT", 40),
-				envInt("AUTH_THROTTLE_BACKLOG", 2000),
+				envInt("AUTH_THROTTLE_BACKLOG", 2500),
 				time.Duration(envInt("AUTH_THROTTLE_TIMEOUT_SEC", 25))*time.Second,
 			))
 			r.Post("/register", wbwAuthHandler.Register)
@@ -502,9 +527,30 @@ func main() {
 				// hundreds of students signing in within the same few minutes.
 				// Same throttle the WBW auth routes use: excess requests queue
 				// and are delayed rather than refused.
+				//
+				// Backlog raised 2000 → 2500 after the 2026-08-22 fair (~3,000
+				// students). Real capacity is limit + backlog = 2,540 held at
+				// once — chi sizes its backlogTokens channel that way — and
+				// anything past it is refused instantly with no queue slot.
+				//
+				// A backlog is only worth as much as it can DRAIN inside
+				// backlogTimeout (25s). Queue depth beyond throughput × timeout
+				// is a promise that cannot be kept: the students at the back
+				// wait the full 25 seconds and are refused anyway, which is
+				// worse than being refused at once. At 40 concurrent we clear
+				// well over 100 req/s, so 25s covers 2,500 with room to spare.
+				//
+				// Queueing beats refusing here for a second reason: a student
+				// who gets an instant 429 retries immediately and adds load,
+				// while a queued one resolves without touching the server
+				// again. Queued requests hold a goroutine and a socket but NOT
+				// a database connection — they have not reached a handler yet.
+				//
+				// ⚠ This value is per-group, not server-wide. The WBW auth
+				// routes call r.Use separately and get their own 2,540.
 				r.Use(middleware.ThrottleBacklog(
 					envInt("AUTH_THROTTLE_LIMIT", 40),
-					envInt("AUTH_THROTTLE_BACKLOG", 2000),
+					envInt("AUTH_THROTTLE_BACKLOG", 2500),
 					time.Duration(envInt("AUTH_THROTTLE_TIMEOUT_SEC", 25))*time.Second,
 				))
 				r.Post("/google", clubFairAuthHandler.SignInWithGoogle)

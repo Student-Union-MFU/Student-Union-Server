@@ -30,15 +30,19 @@ func dsn() string {
 	)
 }
 
-func ConnectDB() (*pgx.Conn, error) {
-	conn, err := pgx.Connect(context.Background(), dsn())
-
-	if err != nil {
-		return  nil, err
-	}
-
-	return conn, nil
-}
+// ConnectDB is GONE ON PURPOSE. Do not bring it back.
+//
+// It returned a single shared *pgx.Conn, and pgx documents that type as "not
+// safe for concurrent usage" (conn.go) with no internal lock and no busy-conn
+// error to catch the mistake — concurrent requests genuinely interleave on the
+// wire. It backed the four oldest SU repositories (event, user, step,
+// leaderboard) until every one of them moved onto the pool below, which is why
+// nothing calls it any more.
+//
+// Anything serving HTTP wants ConnectPool. A one-shot CLI wants ConnectPool too
+// (cmd/createadmin and cmd/createclubfairstaff both use it) — there is no case
+// left in this repo that needs a bare connection except LISTEN, immediately
+// below, which needs it for the opposite reason.
 
 // ConnectListener opens a DEDICATED connection for Postgres LISTEN/NOTIFY.
 //
@@ -52,11 +56,11 @@ func ConnectListener(ctx context.Context) (*pgx.Conn, error) {
 
 // ConnectPool returns a connection POOL.
 //
-// Prefer this over ConnectDB for anything serving HTTP: a single *pgx.Conn is
-// NOT safe for concurrent use, so two requests hitting it at the same time can
-// interleave on the wire and corrupt each other's results. The WBW handlers use
-// this pool. The older repositories still take a *pgx.Conn and should be
-// migrated to the pool too.
+// Use this for anything serving HTTP: a single *pgx.Conn is NOT safe for
+// concurrent use, so two requests hitting it at the same time can interleave on
+// the wire and corrupt each other's results. Every repository in the server now
+// takes this pool — SU, WBW and Club Fair alike — so it is the one place a
+// connection ceiling has to be reasoned about.
 func ConnectPool(ctx context.Context) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(dsn())
 	if err != nil {
@@ -85,5 +89,3 @@ func ConnectPool(ctx context.Context) (*pgxpool.Pool, error) {
 	}
 	return pool, nil
 }
-
-
