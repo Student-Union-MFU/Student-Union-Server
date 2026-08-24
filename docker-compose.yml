@@ -128,6 +128,37 @@ services:
     image: postgres:15-alpine
     container_name: postgres-db
     restart: always
+    # Load pg_stat_statements, which is what makes the server stats page able to
+    # answer "which query is costing us" — see migration 000027 and
+    # docs/stats-dashboard.md.
+    #
+    # ⚠ shared_preload_libraries is a POSTMASTER-level setting. It is read once
+    # when Postgres starts and a reload does not pick it up, so this line only
+    # takes effect after the container is recreated:
+    #
+    #     docker compose up -d --force-recreate database
+    #
+    # ⚠ The extension is the other half, and its absence is silent. Without
+    # `CREATE EXTENSION pg_stat_statements` (migration 000027) the library sits
+    # here collecting statistics that nothing has a view to read. Without THIS
+    # line, the migration succeeds and every query against the view fails at run
+    # time with SQLSTATE 55000. Both halves or neither.
+    #
+    # track=all counts statements nested inside functions and DO blocks too, not
+    # only the ones the server sends directly.
+    #
+    # This replaces the image's default command, which is a bare `postgres` —
+    # the entrypoint still runs first, so initdb, POSTGRES_PASSWORD and the rest
+    # behave exactly as before.
+    #
+    # The cost is a couple of megabytes of shared memory for 5,000 tracked
+    # statements. That matters on this box, which runs the Go server and
+    # Postgres together at around 69% memory, and it is the reason
+    # docs/stats-dashboard.md picks this over a Prometheus and Grafana pair.
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
     environment:
       - POSTGRES_USER=admin
       - POSTGRES_PASSWORD=yion

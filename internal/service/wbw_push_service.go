@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -45,6 +46,17 @@ type WBWPushService struct {
 	tokens  oauth2.TokenSource
 	sendURL string
 	client  *http.Client
+
+	// ตัวนับสำหรับหน้า stats — atomic เพราะ sendOne วิ่งพร้อมกันได้ถึง pushConcurrency
+	// ตัว และเลขพวกนี้ต้องไม่ไปแย่ง lock กับงานส่งจริง
+	//
+	// ทำไมต้องนับ: push เป็นงาน fire-and-forget ทั้งหมด ล้มแล้วไม่มี request ไหนพัง
+	// error ไปจบที่ slog.Warn บรรทัดเดียวแล้วหายไปกับ log · ถ้า FCM ปฏิเสธทุกใบ
+	// (service account หมดอายุ/โปรเจกต์ถูกปิด) อาการที่ผู้ใช้เจอคือ "ไม่มีแจ้งเตือน"
+	// ซึ่งไม่มีใครแจ้ง และไม่มีอะไรในโปรเซสบอกได้เลยว่าเกิดขึ้นแล้ว
+	sendsAttempted atomic.Int64
+	sendsFailed    atomic.Int64
+	tokensReaped   atomic.Int64
 }
 
 // NewWBWPushService อ่าน credential จาก GOOGLE_APPLICATION_CREDENTIALS
@@ -229,6 +241,7 @@ func (s *WBWPushService) sendChat(ctx context.Context, msg model.Message) error 
 
 	if len(invalid) > 0 {
 		slog.Info("เก็บกวาด device token ที่ใช้ไม่ได้", "count", len(invalid))
+		s.tokensReaped.Add(int64(len(invalid)))
 		return s.repo.DeleteTokens(ctx, invalid)
 	}
 	return nil
@@ -311,6 +324,7 @@ func (s *WBWPushService) sendUser(ctx context.Context, userID, title, body strin
 
 	if len(invalid) > 0 {
 		slog.Info("เก็บกวาด device token ที่ใช้ไม่ได้", "count", len(invalid))
+		s.tokensReaped.Add(int64(len(invalid)))
 		return s.repo.DeleteTokens(ctx, invalid)
 	}
 	return nil
@@ -395,6 +409,7 @@ func (s *WBWPushService) sendTokens(ctx context.Context, tokens []string, title,
 
 	if len(invalid) > 0 {
 		slog.Info("เก็บกวาด device token ที่ใช้ไม่ได้", "count", len(invalid))
+		s.tokensReaped.Add(int64(len(invalid)))
 		return s.repo.DeleteTokens(ctx, invalid)
 	}
 	return nil
@@ -403,6 +418,16 @@ func (s *WBWPushService) sendTokens(ctx context.Context, tokens []string, title,
 // sendOne คืน dead=true เมื่อ FCM บอกว่า token นี้ใช้ไม่ได้แล้ว (ถอนแอป/ติดตั้งใหม่)
 // ไม่ลบ token พวกนี้ทิ้ง = ยิง push ใส่เครื่องที่ไม่มีอยู่จริงไปเรื่อยๆ ทุกวัน
 func (s *WBWPushService) sendOne(ctx context.Context, tok *oauth2.Token, payload fcmRequest) (dead bool, err error) {
+	// นับที่นี่จุดเดียว — sendChat/sendUser/sendTokens ผ่านทางนี้หมด · นับ "พยายามส่ง"
+	// ก่อนทุกอย่าง แล้วนับ "ล้ม" จาก err ตอนคืนค่า เพื่อให้สองเลขนี้เทียบกันได้เสมอ
+	// ไม่ว่าจะออกทางไหน (token ตายไม่ใช่ความล้มเหลว — เป็นการเก็บกวาด นับแยก)
+	s.sendsAttempted.Add(1)
+	defer func() {
+		if err != nil {
+			s.sendsFailed.Add(1)
+		}
+	}()
+
 	buf, err := json.Marshal(payload)
 	if err != nil {
 		return false, err
@@ -455,4 +480,29 @@ func senderTitle(msg model.Message) string {
 		return "ข้อความใหม่"
 	}
 	return strings.Join(parts, " ")
+}
+
+// PushStats — สภาพของ push ตั้งแต่ boot สำหรับหน้า stats
+//
+// Enabled=false คือกรณีที่ตั้งใจให้เงียบ: ไม่มี GOOGLE_APPLICATION_CREDENTIALS แปลว่า
+// ทุกคำสั่งส่งกลายเป็น no-op และแชทในแอปยังครบทุกอย่าง (ดูคอมเมนต์ที่ NewWBWPushService)
+// ต้องแยกให้ออกจาก "เปิดอยู่แต่ส่งไม่ผ่านสักใบ" ซึ่งหน้าตาเหมือนกันเป๊ะจากฝั่งผู้ใช้
+type PushStats struct {
+	Enabled        bool  `json:"enabled"`
+	SendsAttempted int64 `json:"sends_attempted"`
+	// ล้มจริง ๆ (เน็ต/FCM ตอบ error ที่ไม่ใช่ token ตาย) · เทียบกับ attempted แล้วเข้าใกล้
+	// กันเมื่อไรคือ push พังทั้งระบบ ไม่ใช่เครื่องใดเครื่องหนึ่ง
+	SendsFailed int64 `json:"sends_failed"`
+	// token ที่ถูกลบทิ้งเพราะ FCM บอกว่าใช้ไม่ได้แล้ว (ถอนแอป/ติดตั้งใหม่) — เป็นงานปกติ
+	// ไม่ใช่ความผิดพลาด แต่ตัวเลขที่พุ่งผิดปกติแปลว่าเพิ่งลบ token ที่ยังดีอยู่ทิ้งไปเยอะ
+	TokensReaped int64 `json:"tokens_reaped"`
+}
+
+func (s *WBWPushService) Stats() PushStats {
+	return PushStats{
+		Enabled:        s.tokens != nil,
+		SendsAttempted: s.sendsAttempted.Load(),
+		SendsFailed:    s.sendsFailed.Load(),
+		TokensReaped:   s.tokensReaped.Load(),
+	}
 }

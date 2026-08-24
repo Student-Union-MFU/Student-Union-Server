@@ -89,7 +89,15 @@ type dbPoolStats struct {
 
 // GET /su-server/admin/db-pool — SU staff only.
 func (h *DBPoolHandler) Stats(w http.ResponseWriter, r *http.Request) {
-	s := h.pool.Stat()
+	appmw.WriteJSON(w, http.StatusOK, readPoolStats(h.pool))
+}
+
+// readPoolStats is the whole of the reading, split out from the handler so the
+// composite /su-server/admin/stats can carry the same numbers without a second
+// copy of the field list. Two copies would drift, and the one on the page
+// people actually read is the one that would go stale.
+func readPoolStats(pool *pgxpool.Pool) dbPoolStats {
+	s := pool.Stat()
 
 	out := dbPoolStats{
 		MaxConns:                s.MaxConns(),
@@ -109,7 +117,7 @@ func (h *DBPoolHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	out.MeanAcquireMS, out.EmptyAcquirePct = derivePoolRates(
 		s.AcquireCount(), s.EmptyAcquireCount(), out.AcquireDurationMS)
 
-	appmw.WriteJSON(w, http.StatusOK, out)
+	return out
 }
 
 // derivePoolRates turns the raw counters into the two numbers worth reading.
