@@ -3,15 +3,15 @@ package repository
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"su-server/internal/model"
 )
 
 type EventRepository struct {
-	db *pgx.Conn
+	db *pgxpool.Pool
 }
 
-func NewEventRepository(db *pgx.Conn) *EventRepository {
+func NewEventRepository(db *pgxpool.Pool) *EventRepository {
 	return &EventRepository{db: db}
 }
 

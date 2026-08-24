@@ -35,10 +35,11 @@ su-server/
 │   ├── main.go                 # Entry point: wiring + every route in the server
 │   └── createadmin/main.go     # Bootstrap the first WBW admin
 ├── config/
-│   └── database.go             # ConnectDB / ConnectPool / ConnectListener
+│   └── database.go             # ConnectPool / ConnectListener
 ├── db/migrations/              # golang-migrate, 000001 … 000022
 ├── docs/
-│   └── chat-v2-deploy.md       # What long-poll needs from the proxy path
+│   ├── chat-v2-deploy.md       # What long-poll needs from the proxy path
+│   └── stats-dashboard.md      # Build notes for the server stats dashboard
 ├── internal/
 │   ├── handler/                # HTTP: decode, call one service, map error → status
 │   ├── middleware/             # Three auth families + WriteJSON/WriteError
@@ -68,15 +69,23 @@ reason it is public or not are written there, in one file, in route order.
 
 ### Two database handles
 
-`config.ConnectDB` returns a single `*pgx.Conn`; `config.ConnectPool` returns a
-`*pgxpool.Pool`. **New code takes the pool.** A single connection is not safe for
-concurrent use — two requests on it can interleave on the wire. The older SU
-repositories (event, user, step, leaderboard) still take `*pgx.Conn` and are
-waiting to be migrated; everything WBW and Club Fair already uses the pool.
+`config.ConnectPool` returns a `*pgxpool.Pool`, and **every repository takes
+it** — SU, WBW and Club Fair alike. A single `*pgx.Conn` is not safe for
+concurrent use: pgx neither locks nor raises a busy error, so two requests on
+one connection genuinely interleave on the wire and corrupt each other's
+results. The four oldest SU repositories (event, user, step, leaderboard) were
+the last holdouts and now share the pool; `config.ConnectDB` is gone, and the
+comment left in its place says why it must not come back.
 
-`config.ConnectListener` opens a third, dedicated connection for `LISTEN`.
+`config.ConnectListener` opens a second, dedicated connection for `LISTEN`.
 It must never come from the pool: a listening connection blocks inside
 `WaitForNotification` and would pin a pool slot forever.
+
+`DB_MAX_CONNS` (default 20) is the ceiling on concurrent database work for the
+whole server. Before changing it, read `empty_acquire_pct` from
+`GET /su-server/admin/db-pool` under real load — while that is ~0 the pool is
+not the bottleneck and a bigger one cannot help. See
+[docs/stats-dashboard.md](docs/stats-dashboard.md).
 
 ## API Routes
 
@@ -157,6 +166,24 @@ piece of work.
 The two reads are public deliberately: a leaderboard is the campaign's front
 page and far likelier to have a live caller than anything below it.
 
+#### Operations
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| `GET` | `/su-server/admin/db-pool` | staff | Live state of the connection pool every product shares |
+
+Not a product feature. It lives under `/su-server` because that is where the
+server-wide staff identity is, but the numbers cover WBW and Club Fair traffic
+too — there is one pool. Read it **during** load: the counters are cumulative
+since boot, so a quiet morning dilutes a bad afternoon.
+
+`empty_acquire_pct` is the field worth knowing. It is the share of acquires that
+had to wait for a free connection, so while it sits near zero the pool is not
+the bottleneck and raising `DB_MAX_CONNS` cannot help — the queue is somewhere
+else (CPU inside Postgres, a slow query, the bcrypt throttle). Only when it
+climbs under real load is a bigger pool the answer, and then `mean_acquire_ms`
+says what the waiting costs. Full reasoning and the plan for the rest of the
+telemetry: [docs/stats-dashboard.md](docs/stats-dashboard.md).
+
 ### Walk-Bike-Week — `/wbw`
 
 `web-next` proxies `/api/*` here: `next.config.ts` strips `/api` and forwards to
@@ -178,6 +205,18 @@ The three `/auth` routes sit behind `middleware.ThrottleBacklog`: bcrypt at cost
 few minutes. Excess requests **queue** and are answered late, and only get a 429
 once the backlog times out — a delay, not a refusal. Tune with
 `AUTH_THROTTLE_LIMIT`, `AUTH_THROTTLE_BACKLOG`, `AUTH_THROTTLE_TIMEOUT_SEC`.
+
+Capacity is `limit + backlog` — **2,540**, not 2,500 — because chi sizes its
+backlog channel that way. Past that, requests are refused with no queue slot.
+Note that a bigger backlog is not automatically better: the 25 s timeout means
+anyone who cannot be served inside it is refused regardless, so depth beyond
+`throughput × timeout` only converts fast refusals into slow ones. The value is
+also **per route group** — `/clubfair/auth` calls `r.Use` separately and gets
+its own 2,540.
+
+⚠ chi rejects with `http.Error`, so a throttled client gets a **plain-text** body
+rather than `{"error": …}`, and no `Retry-After` header. Known gap; see
+[docs/stats-dashboard.md](docs/stats-dashboard.md).
 
 `/wbw/capacity` is deliberately outside that group: the registration page calls
 it before the form is shown, and it reads a single row, so making it wait behind
@@ -319,7 +358,7 @@ Registered only when `CLUBFAIR_JWT_SECRET` is set — see
 | `PUT` | `/clubfair/me/password` | student | How a Google-only account gains the password fallback |
 | `DELETE` | `/clubfair/me` | student | Delete your own account. `204`, and the stamps go with it |
 | `GET` | `/clubfair/me/booths` | student | The booths you run. No role gate — an account with no assignments gets `[]`, which is the true answer for almost everyone |
-| `GET` | `/clubfair/progress` | student | Count, visited booth ids, rank and prize tiers in one call |
+| `GET` | `/clubfair/progress` | student | Count, visited booth ids and prize tiers in one call. `rank` is still in the response but is **always `null`** — the standing was retired after it turned out to be the endpoint's whole cost (see below) |
 | `GET` | `/clubfair/checkins` | student | This student's stamps, oldest first |
 | `POST` | `/clubfair/checkins` | student | Record a scan. Idempotent on `client_id` |
 | `GET` | `/clubfair/announcements` | student | The channel, with `mine` resolved per caller |
@@ -345,6 +384,24 @@ Registered only when `CLUBFAIR_JWT_SECRET` is set — see
 | `PUT` | `/clubfair/admin/participants/{id}/password` | **admin** | Reset someone's password. Refused on your own account, and it does not end a live session |
 | `GET` | `/clubfair/dashboard` | — | The admin console page (HTML). An empty shell — the numbers come from the endpoint below |
 | `GET` | `/clubfair/admin/dashboard` | **admin** | The fair at a glance: students, total check-ins, prizes claimed, full sweeps |
+
+#### Why `progress.rank` is always null
+
+The standing was retired after the 2026-08-22 fair (~3,000 students), where it
+was the measured reason the server slowed at peak. Its query could not use an
+index at any size: the inner `SELECT` had no `WHERE`, so Postgres scanned every
+row of `clubfair_checkin`, grouped it by user and sorted the whole result to
+number the positions, then discarded all but one row. A window function blocks
+predicate pushdown, so filtering to one student on the outside made none of that
+work smaller — and `/clubfair/progress` is polled, so the cost repeated per poll
+and grew with every stamp anyone earned.
+
+The field is still sent, as `null`, rather than removed: clients already render
+null as an em dash for a student with no stamps, and deleting the key would
+break a shipped Android app. `ClubFairFairRepository.rank` is kept but no longer
+called — the WBW site wants a standing later, and the comment on it says how to
+build one that does not do this (compute the whole ranking once behind a short
+TTL, then read one position out of it).
 
 #### The staff dashboard
 
@@ -593,7 +650,7 @@ from `.env`. They must agree, or `migrate` cannot log in on a fresh volume.
 | `FIREBASE_SERVICE_ACCOUNT` | Fallback name for the same thing, from the old Node service | |
 | `TUNNEL_TOKEN` | Cloudflare connector token. A secret — it grants the right to route traffic to you | |
 | `AUTH_THROTTLE_LIMIT` | Concurrent bcrypt calls | `40` |
-| `AUTH_THROTTLE_BACKLOG` | How many wait in the queue | `2000` |
+| `AUTH_THROTTLE_BACKLOG` | How many wait in the queue. Capacity is limit + backlog, per route group | `2500` |
 | `AUTH_THROTTLE_TIMEOUT_SEC` | How long a queued request waits before 429 | `25` |
 | `WBW_EMERGENCY_PHONE` | Central number, returned with `/wbw/me/progress`. Empty = the app uses its built-in default | |
 | `CLUBFAIR_JWT_SECRET` | **Separate** Club Fair key. Unset = `/clubfair` not registered | |

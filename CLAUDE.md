@@ -68,9 +68,11 @@ parse. Errors are always `{"error": "..."}`.
 
 ### Database
 
-- **New code takes `*pgxpool.Pool`.** A single `*pgx.Conn` is not concurrency
-  safe. The older SU repositories (event, user, step, leaderboard) still take
-  `*pgx.Conn`; leave them unless the task is that migration.
+- **Every repository takes `*pgxpool.Pool`.** A single `*pgx.Conn` is not
+  concurrency safe, and pgx neither locks nor errors — concurrent callers
+  interleave on the wire. `config.ConnectDB` is gone; the last four holdouts
+  (event, user, step, leaderboard) moved onto the pool. `LISTEN` is the only
+  bare connection left, for the opposite reason.
 - **Never borrow a pool connection for `LISTEN`.** Use `config.ConnectListener`.
   A listening connection blocks in `WaitForNotification` and would pin a slot
   forever.
@@ -161,7 +163,8 @@ before "fixing" it. If it still seems wrong, say so — don't silently change it
 Known-open items, already documented, not to be quietly fixed as drive-by work:
 
 - `POST /su-server/steps/sync` and `/sync/bulk` trust a body-supplied `user_id`.
-- The older SU repositories still take `*pgx.Conn` rather than the pool.
+- `EventRepository.GetAllEvents` fetches images with one query per event. It
+  closes the outer rows first, so it is correct — but it is an N+1 all the same.
 - `docker-compose.yml` hardcodes `POSTGRES_USER/PASSWORD/DB` on the `database`
   service while `migrate` and `backend` read them from `.env`. They have to agree
   or a fresh volume cannot be migrated.
