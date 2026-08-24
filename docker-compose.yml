@@ -13,7 +13,24 @@ services:
   # Because the hostname is fixed it can back Google OAuth: register
   # https://api.studentunion.social/... as the redirect URI in Google Cloud
   # Console.
+  #
+  # PRODUCTION ONLY — gated behind the "prod" compose profile.
+  #
+  # A dev box has no business opening a public tunnel. Every `docker compose up`
+  # on a laptop was publishing that laptop's backend at
+  # api.studentunion.social, so whoever booted last silently took over the live
+  # hostname and served their half-migrated database to the real apps. The
+  # failure is invisible from the machine causing it: locally everything works.
+  #
+  #   docker compose up -d                  # dev — database, migrate, backend
+  #   docker compose --profile prod up -d   # production — plus the tunnel
+  #
+  # A service with a profile is skipped unless that profile is named, so the
+  # default is now the safe one. `docker compose down` still removes this
+  # container without the flag: down works on the whole project, not on the
+  # active profile set.
   cloudflared:
+    profiles: ["prod"]
     image: cloudflare/cloudflared:latest
     container_name: cloudflared
     restart: unless-stopped

@@ -123,14 +123,26 @@ check: fmt vet test ## fmt + vet + test, what CI would run
 ##@ Docker
 # ============================================================
 
-.PHONY: up down restart logs ps psql
+.PHONY: up up-prod down restart logs ps psql
+
+# `up` is the DEV stack: database, migrate, backend. No tunnel.
+#
+# The Cloudflare tunnel lives behind the "prod" compose profile, so it starts
+# only via `up-prod`. Before that split, every `docker compose up` on a laptop
+# republished api.studentunion.social from that laptop — last one to boot won,
+# invisibly, and the real apps got whatever that machine's database held.
+up: ## Build and start the DEV stack (no tunnel)
+	docker compose up -d --build
 
 # Public ingress is the NAMED Cloudflare tunnel at api.studentunion.social,
 # configured in the Cloudflare dashboard, not here. Port 8080 is bound to
 # 127.0.0.1, so the stack is reachable from this box and through the tunnel —
 # and from nowhere else.
-up: ## Build and start the stack in the background
-	docker compose up -d --build
+#
+# Needs TUNNEL_TOKEN in .env. Run this ONLY on the box that is meant to serve
+# the live hostname.
+up-prod: ## Build and start the stack WITH the Cloudflare tunnel
+	docker compose --profile prod up -d --build
 
 down: ## Stop the stack
 	docker compose down
