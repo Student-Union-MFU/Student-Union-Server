@@ -50,6 +50,9 @@ type SOSEvents struct {
 
 	mu      sync.Mutex
 	waiters map[chan struct{}]struct{}
+
+	// สถานะ listener — อ่านจากหน้า stats เท่านั้น (ดู listenerState)
+	listener listenerState
 }
 
 func NewSOSEvents(pool *pgxpool.Pool, dial func(context.Context) (*pgx.Conn, error)) *SOSEvents {
@@ -61,10 +64,15 @@ func (e *SOSEvents) Start(ctx context.Context) { go e.listenLoop(ctx) }
 func (e *SOSEvents) listenLoop(ctx context.Context) {
 	backoff := newReconnectBackoff()
 	for ctx.Err() == nil {
-		onConnected := func() { backoff.reset() }
+		onConnected := func() {
+			backoff.reset()
+			e.listener.markConnected()
+		}
 		if err := e.listenOnce(ctx, onConnected); err != nil && ctx.Err() == nil {
 			d := backoff.next()
 			slog.Error("sos listener หลุด กำลังต่อใหม่", "err", err, "in", d)
+			// บันทึกก่อนนอน ด้วยเหตุผลเดียวกับ chat listener
+			e.listener.markDropped(err, d)
 			select {
 			case <-time.After(d):
 			case <-ctx.Done():
@@ -146,4 +154,25 @@ func (e *SOSEvents) Notify(ctx context.Context) error {
 	}
 	_, err := e.pool.Exec(ctx, "SELECT pg_notify($1, '')", sosChannel)
 	return err
+}
+
+// SOSEventsStats — คนที่จอดรอ SOS long-poll อยู่ กับสถานะ listener
+//
+// ไม่มี "กลุ่ม" เหมือนแชทเพราะ SOS ยิงถึงทุกคนที่รออยู่ (ดู dispatch) · waiter หนึ่งตัว
+// = หนึ่ง goroutine ค้างใน GET /wbw/me/sos/active หรือ GET /wbw/staff/sos
+//
+// ⚠ listener ตัวนี้สำคัญกว่าของแชท: SOS ที่ช้าไป 25 วินาทีคือคนเจ็บที่รออยู่จริง
+// และ listener ที่หลุดเงียบ ๆ ทำให้เกิดแบบนั้นโดยไม่มี error สักบรรทัด
+type SOSEventsStats struct {
+	Waiters  int           `json:"waiters"`
+	Listener ListenerStats `json:"listener"`
+}
+
+func (e *SOSEvents) Stats() SOSEventsStats {
+	e.mu.Lock()
+	out := SOSEventsStats{Waiters: len(e.waiters)}
+	e.mu.Unlock()
+
+	out.Listener = e.listener.snapshot()
+	return out
 }

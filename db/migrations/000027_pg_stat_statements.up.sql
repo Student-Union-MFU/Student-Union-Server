@@ -1,0 +1,44 @@
+-- ============================================================
+-- Enable pg_stat_statements — which queries are actually costing us.
+--
+-- On 2026-08-22 the server slowed under about 3,000 students at the Club Fair.
+-- Nothing crashed, nothing errored, and no number anywhere could say why. The
+-- cause turned out to be one query — `ClubFairFairRepository.rank`, which
+-- scanned the whole of `clubfair_checkin` on every `GET /clubfair/progress` —
+-- and it was found by a person reading Go code for an afternoon.
+--
+-- This extension is the tool that finds the next one in seconds. It records
+-- every statement the server runs, normalised (constants replaced with $1, $2
+-- …) so a thousand calls of the same query collapse into one row, with the
+-- total time each has consumed. Sorted by `total_exec_time` the offender is the
+-- top row and nothing else is close — from REAL traffic, with no load test, no
+-- seeding, and no guessing beforehand which endpoint was worth modelling.
+--
+-- It is also cheap in the one dimension that matters here. The box runs the Go
+-- server *and* Postgres and already sits near 69% memory, which is why
+-- docs/stats-dashboard.md rules out Prometheus and Grafana; this is a couple of
+-- megabytes of shared memory (5,000 tracked statements by default) inside a
+-- process that is already running.
+--
+-- ⚠ THIS MIGRATION ALONE IS NOT ENOUGH, and it will not tell you so.
+--
+-- `CREATE EXTENSION` succeeds whether or not the library is loaded — the
+-- objects are created either way. Querying the view then fails at RUN time with
+-- SQLSTATE 55000, "pg_stat_statements must be loaded via
+-- shared_preload_libraries". The other half is on the `database` service in
+-- docker-compose.yml:
+--
+--     command: postgres
+--       -c shared_preload_libraries=pg_stat_statements
+--       -c pg_stat_statements.track=all
+--
+-- and Postgres must be RESTARTED after that, not reloaded:
+-- shared_preload_libraries is a postmaster-level setting, read once at startup.
+--
+-- The server handles the half-configured state deliberately rather than
+-- crashing on it — see ErrPGStatStatementsUnavailable in
+-- internal/repository/stats_repository.go. The stats page keeps rendering and
+-- says what is missing.
+-- ============================================================
+
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;

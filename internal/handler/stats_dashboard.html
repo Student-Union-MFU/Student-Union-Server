@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SU Server — stats</title>
+<style>
+  /* Same palette as clubfair_dashboard.html, so the two operator pages look
+     like they came from the same server. */
+  :root {
+    --bg: #f4f5f7;
+    --surface: #ffffff;
+    --ink: #1a1d21;
+    --ink-2: #5b6472;
+    --line: #e3e6ea;
+    --accent: #2456d6;
+    --danger: #b3261e;
+    --warn: #8a5300;
+    --ok: #1b6b3a;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171b;
+      --surface: #1e2329;
+      --ink: #e8eaed;
+      --ink-2: #9aa4b2;
+      --line: #2c333c;
+      --accent: #7da2ff;
+      --danger: #ffb4ab;
+      --warn: #ffc46b;
+      --ok: #7ddba2;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--ink); min-height: 100vh;
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 64px; }
+
+  header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 18px;
+  }
+  h1 { font-size: 1.25rem; font-weight: 600; }
+  h1 small { color: var(--ink-2); font-weight: 400; font-size: .85rem; margin-left: 8px; }
+  h2 { font-size: .95rem; font-weight: 600; margin-bottom: 12px; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px 20px;
+  }
+  section.card { margin-top: 16px; }
+
+  /* ---- sign-in ---- */
+  #signin { max-width: 520px; margin: 8vh auto 0; }
+  #signin ol { margin: 0 0 0 1.1rem; padding: 0; color: var(--ink-2); font-size: .9rem; }
+  #signin li { margin: 10px 0; }
+  #signin li span { color: var(--ink); }
+  label { display: block; font-size: .85rem; color: var(--ink-2); margin: 12px 0 4px; }
+  input, select, textarea {
+    width: 100%; padding: 10px 12px; font: inherit;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--ink);
+  }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  button {
+    font: inherit; border: 0; border-radius: 8px; cursor: pointer;
+    padding: 10px 16px; background: var(--accent); color: #fff; font-weight: 600;
+  }
+  @media (prefers-color-scheme: dark) { button { color: #10131a; } }
+  button:disabled { opacity: .55; cursor: default; }
+  #tokenForm button { width: 100%; margin-top: 14px; }
+  .btn-ghost {
+    background: transparent; color: var(--ink-2); font-weight: 400;
+    border: 1px solid var(--line); padding: 6px 12px; font-size: .85rem;
+  }
+  a { color: var(--accent); }
+  .error { color: var(--danger); font-size: .85rem; margin-top: 12px; min-height: 1.2em; }
+
+  /* ---- dashboard ---- */
+  #dash { display: none; }
+  .tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+  .tile .label { font-size: .8rem; color: var(--ink-2); }
+  .tile .value { font-size: 2rem; font-weight: 600; line-height: 1.2; margin-top: 2px; }
+  .tile .sub { font-size: .78rem; color: var(--ink-2); margin-top: 2px; min-height: 1.1em; }
+
+  .grid2 { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; font-size: .85rem; }
+  dt { color: var(--ink-2); }
+  dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .82rem; }
+  th, td { text-align: right; padding: 6px 8px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  th { color: var(--ink-2); font-weight: 500; position: sticky; top: 0; background: var(--surface); }
+  th:first-child, td:first-child { text-align: left; }
+  td.route { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+  td.sql { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; max-width: 520px; text-align: left; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td { font-variant-numeric: tabular-nums; }
+
+  .pill { font-size: .7rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-2); }
+  .pill.wbw { border-color: var(--accent); color: var(--accent); }
+  .pill.clubfair { border-color: var(--ok); color: var(--ok); }
+  .pill.longpoll { border-color: var(--warn); color: var(--warn); }
+  .good { color: var(--ok); }
+  .bad { color: var(--danger); }
+  .warn { color: var(--warn); }
+  .muted { color: var(--ink-2); }
+
+  .meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--ink-2); font-size: .8rem; margin-top: 16px; }
+  .meta select { width: auto; padding: 5px 8px; font-size: .8rem; }
+  .note { font-size: .8rem; color: var(--ink-2); margin-top: 10px; line-height: 1.5; }
+  .note code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95em; }
+  .empty { color: var(--ink-2); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>SU Server <small>runtime, requests and database</small></h1>
+    <div id="who" style="display:none; align-items:center; gap:10px;">
+      <span id="whoBuild" class="muted" style="font-size:.8rem;"></span>
+      <button class="btn-ghost" id="signOutBtn" type="button">Sign out</button>
+    </div>
+  </header>
+
+  <!-- ================= sign-in =================
+       SU has no password login — the only way to a token is Google OAuth, and
+       GoogleCallback answers with JSON rather than redirecting anywhere this
+       page could catch. So the token is pasted rather than captured. Two steps
+       instead of one, on a page two people will ever open. -->
+  <section id="signin" class="card">
+    <h2>Staff sign-in</h2>
+    <ol>
+      <li><span>Open <a id="googleLink" href="/su-server/auth/google" target="_blank" rel="noopener">Sign in with Google</a></span> — it ends on a page of JSON.</li>
+      <li>Copy the value of <code>"token"</code> from that page.</li>
+      <li>Paste it below. It is kept in this browser's localStorage and sent as a bearer token; nothing else on this page stores anything.</li>
+    </ol>
+    <form id="tokenForm">
+      <label for="token">SU staff token</label>
+      <textarea id="token" rows="3" spellcheck="false" autocomplete="off" placeholder="eyJhbGciOiJIUzI1NiIs..."></textarea>
+      <button type="submit" id="tokenBtn">Use this token</button>
+      <p class="error" id="signinError"></p>
+    </form>
+  </section>
+
+  <!-- ================= dashboard ================= -->
+  <div id="dash">
+    <div class="tiles">
+      <div class="card tile"><div class="label">Goroutines</div><div class="value" id="t_goroutines">—</div><div class="sub" id="t_goroutines_sub"></div></div>
+      <div class="card tile"><div class="label">Requests in flight</div><div class="value" id="t_inflight">—</div><div class="sub" id="t_inflight_sub"></div></div>
+      <div class="card tile"><div class="label">Requests / sec</div><div class="value" id="t_rps">—</div><div class="sub" id="t_rps_sub">since last refresh</div></div>
+      <div class="card tile"><div class="label">Empty acquires</div><div class="value" id="t_empty">—</div><div class="sub" id="t_empty_sub"></div></div>
+      <div class="card tile"><div class="label">Heap in use</div><div class="value" id="t_heap">—</div><div class="sub" id="t_heap_sub"></div></div>
+      <div class="card tile"><div class="label">Pool</div><div class="value" id="t_pool">—</div><div class="sub" id="t_pool_sub"></div></div>
+    </div>
+
+    <div class="meta">
+      <span id="updatedAt"></span>
+      <label for="interval" style="margin:0;">Refresh</label>
+      <select id="interval">
+        <option value="5">5s</option>
+        <option value="10" selected>10s</option>
+        <option value="15">15s</option>
+        <option value="30">30s</option>
+        <option value="60">60s</option>
+      </select>
+      <button class="btn-ghost" id="refreshBtn" type="button">Refresh now</button>
+      <span class="error" id="dashError" style="margin:0;"></span>
+    </div>
+
+    <section class="card">
+      <h2>Requests by route</h2>
+      <p class="note">
+        Percentiles are over the last 512 requests to each route, not since boot.
+        Rows marked <span class="pill longpoll">long-poll</span> are supposed to sit near 25 s —
+        that is the poll parking, not a slow handler.
+      </p>
+      <div class="scroll">
+        <table>
+          <thead><tr>
+            <th>Route</th><th>Count</th><th>/sec</th>
+            <th>p50 ms</th><th>p95 ms</th><th>p99 ms</th>
+            <th>2xx</th><th>4xx</th><th>5xx</th>
+          </tr></thead>
+          <tbody id="routes"></tbody>
+        </table>
+      </div>
+      <p class="empty" id="routesEmpty" style="display:none;">No requests recorded yet.</p>
+    </section>
+
+    <div class="grid2" style="margin-top:16px;">
+      <section class="card" style="margin:0;">
+        <h2>Connection pool</h2>
+        <dl id="poolDl"></dl>
+        <p class="note">
+          When latency climbs, read <strong>empty acquires</strong> first. Flat means the pool is
+          innocent and the cost is inside Postgres. Climbing means requests are queueing for
+          connections, and only then is <code>DB_MAX_CONNS</code> worth revisiting.
+        </p>
+      </section>
+
+      <section class="card" style="margin:0;">
+        <h2>Go runtime</h2>
+        <dl id="runtimeDl"></dl>
+      </section>
+
+      <section class="card" style="margin:0;">
+        <h2>Auth throttle</h2>
+        <div id="throttles"></div>
+        <p class="note">
+          <strong>Capacity exceeded</strong> means the backlog was full and the caller was refused
+          instantly — raise <code>AUTH_THROTTLE_BACKLOG</code>.
+          <strong>Timed out</strong> means it queued and waited the full timeout — raise throughput;
+          a bigger backlog makes this one worse.
+        </p>
+      </section>
+
+      <section class="card" style="margin:0;">
+        <h2>Long-poll and push</h2>
+        <dl id="longpollDl"></dl>
+        <p class="note">
+          A waiter count that only ever grows is a missing <code>Release()</code>, which is a
+          goroutine leak. A listener that is not connected degrades chat and SOS to 25-second
+          latency with no error anywhere.
+        </p>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Postgres</h2>
+      <div class="grid2">
+        <dl id="pgActivityDl"></dl>
+        <dl id="pgDatabaseDl"></dl>
+      </div>
+      <p class="error" id="pgError" style="min-height:0;"></p>
+
+      <h2 style="margin-top:20px;">Heaviest statements by total time</h2>
+      <div id="pgStatementsWrap" class="scroll">
+        <table>
+          <thead><tr>
+            <th>Query</th><th>Calls</th><th>Total ms</th><th>Mean ms</th><th>Max ms</th>
+            <th>Rows</th><th>Blks read</th>
+          </tr></thead>
+          <tbody id="pgStatements"></tbody>
+        </table>
+      </div>
+      <p class="note" id="pgStatementsNote" style="display:none;">
+        <strong>pg_stat_statements is not answering.</strong> It is the single highest-value number
+        on this page — it would have found the query that made the server slow on 2026-08-22 in
+        seconds, ranked by the time it really consumed, from real traffic. To enable it:
+        add <code>command: postgres -c shared_preload_libraries=pg_stat_statements -c
+        pg_stat_statements.track=all</code> to the <code>database</code> service, apply migration
+        <code>000027</code>, then <strong>restart</strong> Postgres — it is a postmaster-level
+        setting and a reload will not do.
+      </p>
+    </section>
+  </div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+
+  const TOKEN_KEY = "su_stats_token";
+  const INTERVAL_KEY = "su_stats_interval";
+  // ⚠ Floor of 5 seconds, enforced here and not only in the <select>. A stats
+  // page that hammers the server distorts what it is measuring, and every
+  // refresh takes a pool connection like any other request.
+  const MIN_INTERVAL_S = 5;
+
+  const $ = (id) => document.getElementById(id);
+  const num = (n, digits = 0) =>
+    Number(n ?? 0).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+
+  let timer = null;
+  let prev = null;   // the previous sample, for per-second rates
+  let inFlight = false;
+
+  /* ---------- views ---------- */
+
+  function show(view) {
+    $("signin").style.display = view === "signin" ? "" : "none";
+    $("dash").style.display = view === "dash" ? "block" : "none";
+    $("who").style.display = view === "dash" ? "flex" : "none";
+    if (view === "signin") { clearInterval(timer); timer = null; prev = null; }
+  }
+
+  function signOut(msg) {
+    localStorage.removeItem(TOKEN_KEY);
+    show("signin");
+    $("signinError").textContent = msg || "";
+  }
+
+  /* ---------- rates ----------
+     Differenced against the SERVER's clock (payload.now), never the browser's:
+     counters are cumulative since boot, so a raw total dilutes a bad afternoon
+     with a quiet morning, and dividing by a browser-measured interval would
+     fold clock skew and network latency into every rate on the page. */
+
+  function elapsed(cur) {
+    if (!prev) return 0;
+    const dt = (new Date(cur.now) - new Date(prev.now)) / 1000;
+    return dt > 0 ? dt : 0;
+  }
+
+  function rate(delta, seconds) {
+    if (!seconds) return null;
+    return delta / seconds;
+  }
+
+  const rateText = (r, digits = 2) => (r === null ? "—" : num(r, digits) + "/s");
+
+  /* ---------- rendering ---------- */
+
+  function dl(el, rows) {
+    el.innerHTML = "";
+    for (const [term, value, cls] of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = term;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      if (cls) dd.className = cls;
+      el.append(dt, dd);
+    }
+  }
+
+  function renderTiles(s, dt) {
+    const rt = s.runtime, pool = s.pool, req = s.requests;
+
+    $("t_goroutines").textContent = num(rt.goroutines);
+    const gDelta = prev ? rt.goroutines - prev.runtime.goroutines : null;
+    $("t_goroutines_sub").textContent =
+      gDelta === null ? "" : (gDelta >= 0 ? "+" : "") + num(gDelta) + " since last refresh";
+
+    $("t_inflight").textContent = num(req.in_flight);
+    $("t_inflight_sub").textContent =
+      num(s.long_poll.chat.waiters + s.long_poll.sos.waiters) + " parked in long-polls";
+
+    const rps = prev ? rate(req.total - prev.requests.total, dt) : null;
+    $("t_rps").textContent = rps === null ? "—" : num(rps, 1);
+
+    $("t_empty").textContent = num(pool.empty_acquire_pct, 3) + "%";
+    const emptyEl = $("t_empty");
+    emptyEl.className = "value " + (pool.empty_acquire_pct > 1 ? "bad" : "");
+    $("t_empty_sub").textContent = "mean wait " + num(pool.mean_acquire_ms, 3) + " ms";
+
+    $("t_heap").textContent = num(rt.heap_in_use_mb, 1);
+    $("t_heap_sub").textContent = "MB · " + num(rt.sys_mb, 0) + " MB from OS";
+
+    $("t_pool").textContent = num(pool.acquired_conns) + " / " + num(pool.max_conns);
+    $("t_pool_sub").textContent = num(pool.idle_conns) + " idle, " + num(pool.total_conns) + " open";
+  }
+
+  function renderRoutes(s, dt) {
+    const body = $("routes");
+    body.innerHTML = "";
+
+    const before = new Map();
+    if (prev) for (const r of prev.requests.routes) before.set(r.method + " " + r.pattern, r);
+
+    const rows = s.requests.routes;
+    $("routesEmpty").style.display = rows.length ? "none" : "";
+
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+
+      const route = document.createElement("td");
+      route.className = "route";
+      route.append(document.createTextNode(r.method + " " + r.pattern + " "));
+      if (r.product !== "other") {
+        const pill = document.createElement("span");
+        pill.className = "pill " + r.product;
+        pill.textContent = r.product;
+        route.append(pill, document.createTextNode(" "));
+      }
+      if (r.long_poll) {
+        const pill = document.createElement("span");
+        pill.className = "pill longpoll";
+        pill.textContent = "long-poll";
+        route.append(pill);
+      }
+      tr.append(route);
+
+      const was = before.get(r.method + " " + r.pattern);
+      const perSec = was ? rate(r.count - was.count, dt) : null;
+
+      // A percentile over a handful of samples is not a percentile, and
+      // printing it in the same style as the others invites acting on it.
+      const thin = r.samples < 20;
+      const lat = (v) => {
+        const td = document.createElement("td");
+        td.textContent = num(v, 1);
+        if (thin) td.className = "muted";
+        else if (!r.long_poll && v >= 1000) td.className = "bad";
+        else if (!r.long_poll && v >= 300) td.className = "warn";
+        return td;
+      };
+
+      const cell = (text, cls) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (cls) td.className = cls;
+        return td;
+      };
+
+      tr.append(
+        cell(num(r.count)),
+        cell(rateText(perSec, 2)),
+        lat(r.p50_ms), lat(r.p95_ms), lat(r.p99_ms),
+        cell(num(r.c2xx)),
+        cell(num(r.c4xx), r.c4xx ? "warn" : ""),
+        cell(num(r.c5xx), r.c5xx ? "bad" : ""),
+      );
+      body.append(tr);
+    }
+  }
+
+  function renderPool(s, dt) {
+    const p = s.pool;
+    const acq = prev ? rate(p.acquire_count - prev.pool.acquire_count, dt) : null;
+    dl($("poolDl"), [
+      ["Max connections", num(p.max_conns)],
+      ["Open now", num(p.total_conns)],
+      ["Acquired", num(p.acquired_conns)],
+      ["Idle", num(p.idle_conns)],
+      ["Acquires", num(p.acquire_count) + "  (" + rateText(acq, 1) + ")"],
+      ["Empty acquires", num(p.empty_acquire_count), p.empty_acquire_count ? "warn" : "good"],
+      ["Empty acquire share", num(p.empty_acquire_pct, 3) + "%", p.empty_acquire_pct > 1 ? "bad" : "good"],
+      ["Canceled acquires", num(p.canceled_acquire_count), p.canceled_acquire_count ? "warn" : ""],
+      ["Mean acquire wait", num(p.mean_acquire_ms, 3) + " ms"],
+      ["New connections", num(p.new_conns_count)],
+    ]);
+  }
+
+  function renderRuntime(s) {
+    const r = s.runtime, b = r.build;
+    const hours = Math.floor(r.uptime_seconds / 3600);
+    const mins = Math.floor((r.uptime_seconds % 3600) / 60);
+
+    dl($("runtimeDl"), [
+      ["Goroutines", num(r.goroutines)],
+      ["GOMAXPROCS", num(r.gomaxprocs) + " of " + num(r.num_cpu) + " CPU",
+        r.gomaxprocs !== r.num_cpu ? "warn" : ""],
+      ["Heap in use", num(r.heap_in_use_mb, 1) + " MB"],
+      ["Heap alloc", num(r.heap_alloc_mb, 1) + " MB"],
+      ["Next GC at", num(r.next_gc_mb, 1) + " MB"],
+      ["Stack in use", num(r.stack_in_use_mb, 1) + " MB"],
+      ["From the OS", num(r.sys_mb, 1) + " MB"],
+      ["GC runs", num(r.gc_count)],
+      ["Last GC pause", num(r.last_gc_pause_ms, 3) + " ms"],
+      ["Total GC pause", num(r.gc_pause_total_ms, 1) + " ms"],
+      ["Uptime", hours + "h " + mins + "m"],
+      ["Go", b.go_version],
+    ]);
+
+    $("whoBuild").textContent = b.revision
+      ? b.revision.slice(0, 8) + (b.modified ? " (modified)" : "")
+      : "development build (no VCS stamp)";
+  }
+
+  function renderThrottles(s, dt) {
+    const wrap = $("throttles");
+    wrap.innerHTML = "";
+    if (!s.throttles.length) {
+      wrap.innerHTML = '<p class="empty">No throttled groups registered.</p>';
+      return;
+    }
+    const before = new Map();
+    if (prev) for (const t of prev.throttles) before.set(t.name, t);
+
+    for (const t of s.throttles) {
+      const h = document.createElement("div");
+      h.style.cssText = "font-size:.85rem;font-weight:600;margin:10px 0 6px;";
+      h.textContent = t.name;
+      const list = document.createElement("dl");
+      const was = before.get(t.name);
+      const admitted = was ? rate(t.admitted - was.admitted, dt) : null;
+
+      dl(list, [
+        ["Capacity", num(t.limit) + " concurrent + " + num(t.backlog) + " queued = " + num(t.capacity)],
+        ["Queue timeout", num(t.timeout_seconds) + " s"],
+        ["Admitted", num(t.admitted) + "  (" + rateText(admitted, 1) + ")"],
+        ["Capacity exceeded", num(t.capacity_exceeded), t.capacity_exceeded ? "bad" : "good"],
+        ["Timed out in queue", num(t.timed_out), t.timed_out ? "bad" : "good"],
+        ["Client canceled", num(t.client_canceled), t.client_canceled ? "muted" : "good"],
+        ["Unrecognised refusal", num(t.unknown), t.unknown ? "warn" : "good"],
+      ]);
+      wrap.append(h, list);
+    }
+  }
+
+  function listenerCell(l) {
+    if (l.connected) return ["connected", "good"];
+    const retry = l.retry_in_seconds ? " · retry in " + num(l.retry_in_seconds) + "s" : "";
+    return ["NOT CONNECTED" + retry, "bad"];
+  }
+
+  function renderLongPoll(s) {
+    const c = s.long_poll.chat, o = s.long_poll.sos, p = s.push;
+    const [chatState, chatCls] = listenerCell(c.listener);
+    const [sosState, sosCls] = listenerCell(o.listener);
+
+    dl($("longpollDl"), [
+      ["Chat waiters", num(c.waiters)],
+      ["Chat groups watched", num(c.groups)],
+      ["Chat listener", chatState, chatCls],
+      ["SOS waiters", num(o.waiters)],
+      ["SOS listener", sosState, sosCls],
+      ["Push", p.enabled ? "enabled" : "disabled (no credentials)", p.enabled ? "good" : "muted"],
+      ["Push sends attempted", num(p.sends_attempted)],
+      ["Push sends failed", num(p.sends_failed), p.sends_failed ? "bad" : "good"],
+      ["Device tokens reaped", num(p.tokens_reaped)],
+    ]);
+  }
+
+  function renderPostgres(s, dt) {
+    const pg = s.postgres, a = pg.activity, d = pg.database;
+
+    dl($("pgActivityDl"), [
+      ["Backends active", num(a.active)],
+      ["Idle", num(a.idle)],
+      ["Idle in transaction", num(a.idle_in_transaction), a.idle_in_transaction ? "warn" : "good"],
+      ["Oldest idle-in-tx", num(a.longest_idle_in_transaction_seconds, 1) + " s",
+        a.longest_idle_in_transaction_seconds > 60 ? "bad" : ""],
+      ["Waiting on a lock", num(a.waiting_on_lock), a.waiting_on_lock ? "warn" : "good"],
+      ["Client backends", num(a.total) + " / " + num(a.max_connections),
+        a.max_connections && a.total / a.max_connections > 0.8 ? "bad" : ""],
+    ]);
+
+    const commits = prev ? rate(d.xact_commit - prev.postgres.database.xact_commit, dt) : null;
+    dl($("pgDatabaseDl"), [
+      ["Commits", num(d.xact_commit) + "  (" + rateText(commits, 1) + ")"],
+      ["Rollbacks", num(d.xact_rollback)],
+      ["Deadlocks", num(d.deadlocks), d.deadlocks ? "bad" : "good"],
+      ["Cache hit", num(d.cache_hit_pct, 2) + "%", d.cache_hit_pct && d.cache_hit_pct < 95 ? "warn" : "good"],
+      ["Blocks read from disk", num(d.blks_read)],
+      ["Temp files spilled", num(d.temp_files), d.temp_files ? "warn" : "good"],
+      ["Stats reset", d.stats_reset ? new Date(d.stats_reset).toLocaleString() : "never"],
+    ]);
+
+    $("pgError").textContent = pg.error || "";
+
+    const body = $("pgStatements");
+    body.innerHTML = "";
+    $("pgStatementsNote").style.display = pg.statements_available ? "none" : "";
+    $("pgStatementsWrap").style.display = pg.statements_available ? "" : "none";
+
+    for (const st of pg.statements || []) {
+      const tr = document.createElement("tr");
+      const q = document.createElement("td");
+      q.className = "sql";
+      q.textContent = st.query;
+      tr.append(q);
+      for (const [v, digits] of [[st.calls, 0], [st.total_exec_ms, 1], [st.mean_exec_ms, 2],
+                                 [st.max_exec_ms, 1], [st.rows, 0], [st.shared_blks_read, 0]]) {
+        const td = document.createElement("td");
+        td.textContent = num(v, digits);
+        tr.append(td);
+      }
+      body.append(tr);
+    }
+  }
+
+  function render(s) {
+    const dt = elapsed(s);
+    renderTiles(s, dt);
+    renderRoutes(s, dt);
+    renderPool(s, dt);
+    renderRuntime(s);
+    renderThrottles(s, dt);
+    renderLongPoll(s);
+    renderPostgres(s, dt);
+
+    $("updatedAt").textContent = "Updated " + new Date(s.now).toLocaleTimeString();
+    $("dashError").textContent = "";
+    prev = s;
+  }
+
+  /* ---------- fetching ---------- */
+
+  async function fetchStats(token) {
+    const res = await fetch("/su-server/admin/stats", {
+      headers: { Authorization: "Bearer " + token },
+      cache: "no-store",
+    });
+    if (res.status === 401) throw { signOut: "Session expired. Sign in again for a new token." };
+    if (res.status === 403) throw { signOut: "That token is valid but the account is not SU staff." };
+    if (!res.ok) throw new Error("server answered " + res.status);
+    return res.json();
+  }
+
+  async function load() {
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (!token) return signOut();
+    // A slow refresh must not queue up behind itself: at a 5-second interval a
+    // request that takes longer than that would otherwise pile requests onto a
+    // server already struggling, which is the failure this page exists to see.
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      render(await fetchStats(token));
+    } catch (e) {
+      if (e && e.signOut) return signOut(e.signOut);
+      $("dashError").textContent = "Could not reach the server.";
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  function schedule() {
+    clearInterval(timer);
+    let seconds = Number($("interval").value) || 10;
+    if (seconds < MIN_INTERVAL_S) seconds = MIN_INTERVAL_S;
+    localStorage.setItem(INTERVAL_KEY, String(seconds));
+    timer = setInterval(load, seconds * 1000);
+  }
+
+  function enterDash() {
+    show("dash");
+    load();
+    schedule();
+  }
+
+  /* ---------- wiring ---------- */
+
+  $("tokenForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const token = $("token").value.trim();
+    $("signinError").textContent = "";
+    if (!token) {
+      $("signinError").textContent = "Paste the token first.";
+      return;
+    }
+    $("tokenBtn").disabled = true;
+    try {
+      // Verified before it is stored, so a wrong paste says so here rather
+      // than leaving the page in a state that signs itself out on every load.
+      await fetchStats(token);
+      localStorage.setItem(TOKEN_KEY, token);
+      $("token").value = "";
+      enterDash();
+    } catch (err) {
+      $("signinError").textContent =
+        (err && err.signOut) || "That token was not accepted.";
+    } finally {
+      $("tokenBtn").disabled = false;
+    }
+  });
+
+  $("refreshBtn").addEventListener("click", load);
+  $("signOutBtn").addEventListener("click", () => signOut());
+  $("interval").addEventListener("change", schedule);
+
+  const savedInterval = localStorage.getItem(INTERVAL_KEY);
+  if (savedInterval) $("interval").value = savedInterval;
+
+  if (localStorage.getItem(TOKEN_KEY)) enterDash();
+  else show("signin");
+})();
+</script>
+</body>
+</html>

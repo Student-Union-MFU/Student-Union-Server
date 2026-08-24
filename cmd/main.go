@@ -34,6 +34,27 @@ func main() {
 
 	r := chi.NewRouter()
 
+	// Per-route request metrics for the stats page — count, latency and status
+	// classes, held in memory behind a mutex. The long-poll routes are named
+	// here because their 25-second latency is CORRECT (see maxWaitSeconds in
+	// wbw_chat_service.go and docs/chat-v2-deploy.md); flagged rather than
+	// excluded, so a chat/sync that starts failing fast is still visible.
+	requestMetrics := appmw.NewRequestMetrics(
+		"GET /wbw/groups/{groupId}/chat/sync",
+		"GET /wbw/me/sos/active",
+		"GET /wbw/staff/sos",
+	)
+
+	// ⚠ Mounted ABOVE Recoverer, not below it. chi nests middleware
+	// outermost-first, so a handler that panics under Recoverer unwinds through
+	// whatever sits below it BEFORE the recover() runs — a recorder mounted
+	// there would file the request as status 0 and never see the 500 the client
+	// received. Above, Recoverer writes its 500 into the wrapped writer first
+	// and the recorder reads what actually went out.
+	// (docs/stats-dashboard.md asks for the opposite order for this exact
+	// reason; the reason is right and the ordering it prescribes defeats it.)
+	r.Use(appmw.RecordRequests(requestMetrics))
+
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
@@ -174,6 +195,38 @@ func main() {
 	wbwSOSHandler := handler.NewWBWSOSHandler(
 		service.NewWBWSOSService(sosRepo, sosEvents, wbwPushService, wbwNotiService, emergencyPhone))
 
+	/*
+	   The two auth throttles.
+
+	   Built here rather than inline at each r.Use so the stats handler can
+	   report them, and wrapped by appmw.Throttle rather than used raw so a
+	   refused caller gets {"error": "..."} and a Retry-After instead of chi's
+	   plain text with no backoff hint — see internal/middleware/throttle.go.
+	   The queueing itself is still chi's, unchanged.
+
+	   ⚠ Two INDEPENDENT throttlers, not one shared quota. Each gets its own
+	   limit + backlog, which is why they are reported apart on the stats page.
+	*/
+	throttleLimit := envInt("AUTH_THROTTLE_LIMIT", 40)
+	throttleBacklog := envInt("AUTH_THROTTLE_BACKLOG", 2500)
+	throttleTimeout := time.Duration(envInt("AUTH_THROTTLE_TIMEOUT_SEC", 25)) * time.Second
+
+	wbwAuthThrottle := appmw.NewThrottle("wbw-auth", throttleLimit, throttleBacklog, throttleTimeout)
+	clubFairAuthThrottle := appmw.NewThrottle("clubfair-auth", throttleLimit, throttleBacklog, throttleTimeout)
+
+	// The stats page and its data endpoints — docs/stats-dashboard.md.
+	//
+	// Holds the pool, the metric stores and the two event fan-outs directly,
+	// with a repository only for the part that reads Postgres. The comment
+	// block on StatsHandler argues the split; the same argument as DBPoolHandler
+	// above, which is why neither has a service under it.
+	statsRepository := repository.NewStatsRepository(pool)
+	statsHandler := handler.NewStatsHandler(
+		pool, statsRepository, requestMetrics,
+		chatEvents, sosEvents, wbwPushService,
+		wbwAuthThrottle, clubFairAuthThrottle,
+	)
+
 	// ต้องผ่าน RequireAuth ก่อนเสมอ แล้วจึงเช็ค role
 	requireAuth := appmw.RequireAuth(wbwTokens)
 	requireAdmin := appmw.RequireRole("admin")
@@ -290,6 +343,40 @@ func main() {
 		// cumulative since boot, so a quiet morning dilutes a bad afternoon.
 		r.With(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff()).
 			Get("/admin/db-pool", dbPoolHandler.Stats)
+
+		/*
+		   The server stats dashboard — docs/stats-dashboard.md.
+
+		   ⚠ The PAGE is public, and must stay that way. A browser navigating
+		   to a URL cannot send an Authorization header, so auth middleware
+		   here would 401 every visit and could never be satisfied. The page
+		   carries no numbers at all: it is a shell that signs in with a staff
+		   token and then fetches. The gate is on the data below, which is
+		   where it can actually work — the same arrangement
+		   /clubfair/dashboard uses.
+
+		   It lives under /su-server because that is where the server-wide
+		   staff identity is, but what it reports spans all three products.
+		*/
+		r.Get("/stats", statsHandler.StatsDashboardPage)
+
+		/*
+		   The numbers. SU staff only, like /admin/db-pool above and for the
+		   same reason: they describe how much headroom is left before the
+		   server starves, which is precisely what someone probing wants.
+
+		   /admin/stats is the composite the page polls — one call rather than
+		   six, so a refresh cannot render half a state and costs one pool
+		   acquisition instead of six. The three beside it exist for reading a
+		   single section with curl during an incident.
+		*/
+		r.Group(func(r chi.Router) {
+			r.Use(appmw.RequireSUAuth(jwtService), appmw.RequireSUStaff())
+			r.Get("/admin/stats", statsHandler.All)
+			r.Get("/admin/runtime", statsHandler.Runtime)
+			r.Get("/admin/requests", statsHandler.Requests)
+			r.Get("/admin/postgres", statsHandler.Postgres)
+		})
 	})
 
 	// ---------- Club Fair ----------
@@ -362,11 +449,11 @@ func main() {
 			//
 			// ⚠ ค่านี้เป็นของ "แต่ละกลุ่ม" ไม่ใช่ของทั้งเซิร์ฟเวอร์ — /clubfair/auth
 			// เรียก r.Use แยกอีกชุด จึงได้โควตา 2540 ของตัวเองต่างหาก
-			r.Use(middleware.ThrottleBacklog(
-				envInt("AUTH_THROTTLE_LIMIT", 40),
-				envInt("AUTH_THROTTLE_BACKLOG", 2500),
-				time.Duration(envInt("AUTH_THROTTLE_TIMEOUT_SEC", 25))*time.Second,
-			))
+			//
+			// ตัว throttle เป็นของ chi เหมือนเดิมทุกอย่าง แค่ห่อให้คนที่โดนปฏิเสธได้ JSON
+			// ที่แอปอ่านออก ({"error": "..."}) พร้อม Retry-After แทน plain text เปล่า ๆ
+			// และนับแยกตามสาเหตุ เพราะ "คิวเต็ม" กับ "รอจนหมดเวลา" ต้องแก้คนละทางกัน
+			r.Use(wbwAuthThrottle.Handler())
 			r.Post("/register", wbwAuthHandler.Register)
 			r.Post("/login", wbwAuthHandler.Login)
 			// เจ้าหน้าที่สมัครเอง — สร้างบัญชี pending รอแอดมินอนุมัติ (throttle เดียวกับ auth)
@@ -548,11 +635,12 @@ func main() {
 				//
 				// ⚠ This value is per-group, not server-wide. The WBW auth
 				// routes call r.Use separately and get their own 2,540.
-				r.Use(middleware.ThrottleBacklog(
-					envInt("AUTH_THROTTLE_LIMIT", 40),
-					envInt("AUTH_THROTTLE_BACKLOG", 2500),
-					time.Duration(envInt("AUTH_THROTTLE_TIMEOUT_SEC", 25))*time.Second,
-				))
+				//
+				// Wrapped, for the same reasons as the WBW group: chi's
+				// throttle refuses with plain text and no Retry-After, which
+				// the apps cannot read and which pushes a refused student
+				// straight into a retry. See internal/middleware/throttle.go.
+				r.Use(clubFairAuthThrottle.Handler())
 				r.Post("/google", clubFairAuthHandler.SignInWithGoogle)
 				r.Post("/login", clubFairAuthHandler.SignInWithPassword)
 				r.Post("/register", clubFairAuthHandler.Register)

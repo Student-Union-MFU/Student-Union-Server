@@ -39,6 +39,9 @@ type ChatEvents struct {
 
 	mu      sync.Mutex
 	waiters map[int]map[*chatWaiter]struct{}
+
+	// สถานะ listener — อ่านจากหน้า stats เท่านั้น ไม่มีใครใน path ปกติแตะ
+	listener listenerState
 }
 
 func NewChatEvents(pool *pgxpool.Pool, dial func(context.Context) (*pgx.Conn, error)) *ChatEvents {
@@ -59,6 +62,9 @@ func (e *ChatEvents) listenLoop(ctx context.Context) {
 	for ctx.Err() == nil {
 		if err := e.listenOnce(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("chat listener dropped, retrying", "err", err, "in", backoff)
+			// บันทึกก่อนนอน เพื่อให้หน้า stats เห็น "หลุดอยู่ จะต่อใหม่ในอีก N วิ"
+			// ไม่ใช่เห็นตอนต่อใหม่เสร็จแล้วซึ่งสายไป
+			e.listener.markDropped(err, backoff)
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -84,6 +90,7 @@ func (e *ChatEvents) listenOnce(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, "LISTEN "+chatChannel); err != nil {
 		return err
 	}
+	e.listener.markConnected()
 	slog.Info("chat listener connected", "channel", chatChannel)
 
 	for {
@@ -197,4 +204,30 @@ func (e *ChatEvents) NotifyGroup(ctx context.Context, groupID int, actor string)
 		// ปลุกไม่สำเร็จ = ข้อความยังถึงอยู่ แค่ช้าเท่ารอบ poll ถัดไป ไม่ใช่เหตุให้ request พัง
 		slog.Error("chat notify failed", "group_id", groupID, "err", err)
 	}
+}
+
+// ChatEventsStats — จำนวนคนที่จอดรอ long-poll อยู่ตอนนี้ กับสถานะ listener
+//
+// Waiters คือตัวที่ต้องจ้อง: หนึ่ง waiter = หนึ่ง goroutine ที่ค้างอยู่ใน Wait() ของ
+// GET /wbw/groups/{groupId}/chat/sync · เลขนี้ควรขึ้นลงตามคนที่เปิดจอแชทอยู่จริง
+// ถ้ามันขึ้นอย่างเดียวไม่เคยลง แปลว่ามีเส้นทางไหนลืม Release() แล้ว waiter ค้างใน map
+// ไปตลอดอายุโปรเซส — ซึ่งเป็น goroutine leak ที่เห็นได้จากตรงนี้ที่เดียว
+type ChatEventsStats struct {
+	Waiters  int           `json:"waiters"`
+	Groups   int           `json:"groups"`
+	Listener ListenerStats `json:"listener"`
+}
+
+// Stats — อ่านใต้ mu ตัวเดียวกับที่ dispatch/Watch/Release ใช้ · O(จำนวนกลุ่มที่มีคนรอ)
+// ซึ่งเล็กมากและถูกเรียกแค่ตอนเปิดหน้า stats ไม่ใช่ต่อ request
+func (e *ChatEvents) Stats() ChatEventsStats {
+	e.mu.Lock()
+	out := ChatEventsStats{Groups: len(e.waiters)}
+	for _, group := range e.waiters {
+		out.Waiters += len(group)
+	}
+	e.mu.Unlock()
+
+	out.Listener = e.listener.snapshot()
+	return out
 }
