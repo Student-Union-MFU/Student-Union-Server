@@ -125,7 +125,7 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		       p.bib_number, p.first_name, p.last_name, p.sex::text,
 		       to_char(p.date_of_birth, 'YYYY-MM-DD'),
 		       p.contact_phone, p.school_id, s.name, p.major,
-		       p.group_id, g.group_number, p.photo_url,
+		       p.group_id, g.group_number, p.photo_url, p.avatar,
 		       COALESCE(p.checked_in, FALSE),
 		       p.emergency_contact_name, p.emergency_contact_phone,
 		       h.blood_type::text, h.weight_kg, h.height_cm,
@@ -147,7 +147,7 @@ func (r *WBWAdminRepository) ParticipantDetail(ctx context.Context, id string) (
 		 WHERE u.user_id = $1 AND u.role = 'participant'`, id,
 	).Scan(&d.ID, &d.StudentID, &d.Created, &d.Bib, &d.FirstName, &d.LastName, &d.Sex,
 		&d.DateOfBirth, &d.ContactPhone, &d.SchoolID, &d.SchoolName, &d.Major,
-		&d.GroupID, &d.GroupNumber, &d.PhotoURL, &d.CheckedIn,
+		&d.GroupID, &d.GroupNumber, &d.PhotoURL, &d.Avatar, &d.CheckedIn,
 		&d.EmergencyContactName, &d.EmergencyContactPhone,
 		&d.BloodType, &d.WeightKg, &d.HeightCm,
 		&d.ConsentHealthData, &d.ConsentEmergencyTreatment, &d.WaiverAccepted,
@@ -516,6 +516,20 @@ func (r *WBWAdminRepository) ListLogs(ctx context.Context) ([]model.AdminLog, er
 //
 // จำกัดไว้แค่ photo_url โดยตั้งใจ · ฟิลด์อื่น (กลุ่ม, BIB, สำนักวิชา) เป็นของ admin
 // เปิดให้ PATCH ทั้ง profile จากฝั่งผู้ใช้ = เขาย้ายกลุ่มตัวเองข้ามการเช็คที่นั่งได้
+// UpdateOwnAvatar — ตั้งรูปประจำตัวจากชุดที่แอปกำหนด · nil = กลับไปใช้วงกลมสีเดิม
+func (r *WBWAdminRepository) UpdateOwnAvatar(ctx context.Context, userID string, avatar *string) error {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE participant_profile SET avatar = $1, updated_at = now() WHERE user_id = $2`,
+		avatar, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (r *WBWAdminRepository) UpdateOwnPhoto(ctx context.Context, userID string, photoURL *string) error {
 	tag, err := r.db.Exec(ctx,
 		`UPDATE participant_profile SET photo_url = $1, updated_at = now() WHERE user_id = $2`,

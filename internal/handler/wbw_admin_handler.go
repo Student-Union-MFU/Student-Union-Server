@@ -166,9 +166,34 @@ func (h *WBWAdminHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteError(w, http.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
 		return
 	}
+	// avatar ก่อน แล้วค่อย photo_url — สองคีย์คนละความหมาย ส่งมาได้ทีละอย่าง
+	//
+	// เขียนเป็นสองสาขาแทนที่จะรวมเป็นโครงสร้างเดียว เพราะ "ไม่ได้ส่งคีย์นี้มา" กับ
+	// "ส่งมาเป็น null" ต้องแยกกันให้ออก — null คือคำสั่งให้ลบ ส่วนไม่ส่งคือไม่แตะ
+	if field, ok := raw["avatar"]; ok {
+		var avatar *string
+		if err := json.Unmarshal(field, &avatar); err != nil {
+			middleware.WriteError(w, http.StatusBadRequest, "avatar ไม่ถูกต้อง")
+			return
+		}
+		err := h.service.UpdateOwnAvatar(r.Context(), claims.Subject, avatar)
+		switch {
+		case errors.Is(err, service.ErrBadAvatar):
+			middleware.WriteError(w, http.StatusBadRequest, "ไม่รู้จักรูปนี้")
+		case errors.Is(err, repository.ErrNotFound):
+			middleware.WriteError(w, http.StatusNotFound, "ไม่พบข้อมูลผู้เข้าร่วม")
+		case err != nil:
+			slog.Error("update own avatar failed", "err", err)
+			middleware.WriteError(w, http.StatusInternalServerError, "บันทึกไม่สำเร็จ")
+		default:
+			middleware.WriteJSON(w, http.StatusOK, map[string]any{"avatar": avatar})
+		}
+		return
+	}
+
 	field, ok := raw["photo_url"]
 	if !ok {
-		middleware.WriteError(w, http.StatusBadRequest, "ต้องมี photo_url")
+		middleware.WriteError(w, http.StatusBadRequest, "ต้องมี photo_url หรือ avatar")
 		return
 	}
 	var photoURL *string

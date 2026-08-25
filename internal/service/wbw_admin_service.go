@@ -54,6 +54,30 @@ func (s *WBWAdminService) ListGroups(ctx context.Context) ([]model.Group, error)
 	return s.admin.ListGroups(ctx)
 }
 
+// ErrBadAvatar — คีย์รูปที่ไม่ได้อยู่ในชุดที่กำหนด
+var ErrBadAvatar = errors.New("unknown avatar")
+
+// avatarKeys — ชุดรูปประจำตัวทั้งหมดที่รับได้
+//
+// อยู่ที่นี่ ไม่ใช่ CHECK ใน schema เพราะชุดนี้เป็นเรื่องหน้าตาของแอปและจะเพิ่มลดตามงาน
+// การผูกไว้ในฐานข้อมูลแปลว่าเปลี่ยนรูปทีต้อง migrate ที ส่วนตรงนี้แก้พร้อมแอปได้ในคอมมิตเดียว
+//
+// ตรวจฝั่งเซิร์ฟเวอร์ด้วย ไม่ใช่เชื่อแอป — PATCH /wbw/me เปิดให้ผู้ใช้เรียกตรงได้ ถ้าไม่ตรวจ
+// ก็จะมีคีย์อะไรก็ได้หลุดเข้าฐานข้อมูล แล้วเครื่องอื่นที่ไม่รู้จักคีย์นั้นวาดอะไรไม่ออก
+var avatarKeys = map[string]bool{
+	"pine": true, "blossom": true, "deer": true, "leaf": true,
+	"fern": true, "peak": true, "feather": true, "mushroom": true,
+	"butterfly": true, "grass": true, "bird": true, "sun": true,
+}
+
+// UpdateOwnAvatar — ตั้งรูปประจำตัวตัวเอง · nil = เลิกใช้ กลับไปเป็นวงกลมสีเดิม
+func (s *WBWAdminService) UpdateOwnAvatar(ctx context.Context, userID string, avatar *string) error {
+	if avatar != nil && !avatarKeys[*avatar] {
+		return ErrBadAvatar
+	}
+	return s.admin.UpdateOwnAvatar(ctx, userID, avatar)
+}
+
 // UpdateOwnPhoto — เปลี่ยนรูปโปรไฟล์ตัวเอง · ส่ง photo_url เป็น null = ลบรูป
 func (s *WBWAdminService) UpdateOwnPhoto(ctx context.Context, userID string, photoURL *string) error {
 	return s.admin.UpdateOwnPhoto(ctx, userID, photoURL)

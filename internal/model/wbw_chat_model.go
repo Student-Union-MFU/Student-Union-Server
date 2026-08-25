@@ -18,6 +18,9 @@ type Message struct {
 	CreatedAt  *string `json:"created_at"`
 	FirstName  *string `json:"first_name"`
 	LastName   *string `json:"last_name"`
+	// Avatar — คีย์รูปของผู้ส่ง ติดมากับข้อความเพื่อให้ห้องแชทวาดได้โดยไม่ต้องถามรายชื่อ
+	// สมาชิกก่อน · ผู้ส่งที่ยังไม่เลือกจะเป็น NULL และฝั่งแอปวาดวงกลมสีเดิมให้
+	Avatar *string `json:"avatar"`
 }
 
 // ReadCursor — คนอื่นในกลุ่มอ่านถึง id ไหน (server ตัดตัวผู้เรียกออกให้แล้ว)
@@ -53,6 +56,7 @@ type GroupMember struct {
 	FirstName *string `json:"first_name"`
 	LastName  *string `json:"last_name"`
 	PhotoURL  *string `json:"photo_url"`
+	Avatar    *string `json:"avatar"`
 	Bib       *int    `json:"bib"`
 	School    *string `json:"school"`
 }
