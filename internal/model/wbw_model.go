@@ -238,6 +238,11 @@ type ParticipantCheckpoint struct {
 	RequiresCheckin bool     `json:"requires_checkin"`
 	Lat             *float64 `json:"lat"`
 	Lng             *float64 `json:"lng"`
+	// CheckinCount — จำนวนผู้เข้าร่วมที่เช็คอินฐานนี้แล้ว ณ ตอนที่ถาม
+	//
+	// นับสดจาก check_in ทุกครั้ง ไม่ได้เก็บเป็นตัวเลขไว้ที่ไหน — ดูเหตุผลใน
+	// ListForParticipant · จุดบริการที่ไม่ต้องเช็คอินจะได้ 0 ซึ่งเป็นความจริง ไม่ใช่ค่าว่าง
+	CheckinCount int `json:"checkin_count"`
 }
 
 // CheckpointPatched — response ของ PATCH ไม่มี key staff (ตามของเดิม)

@@ -58,11 +58,24 @@ func (r *WBWCheckpointRepository) List(ctx context.Context) ([]model.Checkpoint,
 // เรียงเหมือน List ของแอดมิน (sequence ก่อน แล้วค่อย id) เพื่อให้ทั้งสองฝั่งเห็นลำดับเดียวกัน —
 // จุดบริการไม่มี sequence จึงตกไปท้ายด้วย NULLS LAST
 func (r *WBWCheckpointRepository) ListForParticipant(ctx context.Context) ([]model.ParticipantCheckpoint, error) {
+	// จำนวนคนที่เช็คอินต่อฐาน นับสดจาก check_in ทุกครั้งที่ถาม ไม่ได้เก็บเป็นตัวนับไว้
+	//
+	// ตัวนับที่เก็บไว้เป็นสำเนาที่เพี้ยนได้ — เช็คอินที่เพิ่มแถวแต่ลืมบวก, แถวที่แอดมินลบทิ้ง,
+	// retry ที่บวกสองครั้ง — แล้วไม่มีใครรู้ว่าเลขเริ่มผิดตั้งแต่เมื่อไร ส่วน check_in คือ
+	// ตัวบันทึกจริง การนับมันจึงถูกเสมอตามนิยาม ไม่ใช่ถูกถ้าไม่มีอะไรพลาด
+	//
+	// ถูกด้วยว่าเป็น "จำนวนคน" ไม่ใช่ "จำนวนครั้ง": check_in มี UNIQUE (participant_id,
+	// checkpoint_id) อยู่แล้ว คนหนึ่งจึงมีได้แถวเดียวต่อฐาน count(*) กับ
+	// count(DISTINCT participant_id) ให้ผลเดียวกัน และตัวแรกใช้ index ตรง ๆ
+	//
+	// ราคา: idx_checkin_checkpoint คลุมคอลัมน์ที่กรอง งานจึงเป็นการนับ index ต่อฐาน ไม่ใช่
+	// สแกนทั้งตาราง ที่ ~2,000 คน × ~9 ฐาน = ~18,000 แถว ถือว่าถูกกว่าการดูแลตัวนับให้ตรง
 	rows, err := r.db.Query(ctx, `
-		SELECT checkpoint_id, sequence, name, name_en, activity_name, activity_name_en,
-		       type::text, requires_checkin, lat, lng
-		  FROM checkpoint
-		 ORDER BY sequence NULLS LAST, checkpoint_id`)
+		SELECT c.checkpoint_id, c.sequence, c.name, c.name_en, c.activity_name, c.activity_name_en,
+		       c.type::text, c.requires_checkin, c.lat, c.lng,
+		       (SELECT count(*)::int FROM check_in ci WHERE ci.checkpoint_id = c.checkpoint_id) AS checkin_count
+		  FROM checkpoint c
+		 ORDER BY c.sequence NULLS LAST, c.checkpoint_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +88,7 @@ func (r *WBWCheckpointRepository) ListForParticipant(ctx context.Context) ([]mod
 		var c model.ParticipantCheckpoint
 		if err := rows.Scan(&c.ID, &c.Sequence, &c.Name, &c.NameEn,
 			&c.ActivityName, &c.ActivityNameEn, &c.Type, &c.RequiresCheckin,
-			&c.Lat, &c.Lng); err != nil {
+			&c.Lat, &c.Lng, &c.CheckinCount); err != nil {
 			return nil, err
 		}
 		list = append(list, c)
