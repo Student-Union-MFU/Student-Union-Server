@@ -189,6 +189,50 @@ func (h *WBWAdminHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+/*
+DeleteMe — ผู้เข้าร่วมลบบัญชีของตัวเอง (DELETE /wbw/me)
+
+หน้า /privacy ของเว็บและหน้าตั้งค่าของแอปเรียกตัวนี้ · เป็น "ลบทันที" ไม่ใช่คำขอ
+ที่รอแอดมินอนุมัติ เพราะทั้ง App Store และ Google Play บังคับว่าแอปที่สร้างบัญชีได้
+ต้องลบบัญชีได้เองในทางที่ไม่ต้องรอใคร (ทรงเดียวกับ DELETE /clubfair/me)
+
+ตัวยืนยันตัวตนคือ token — เว็บบังคับให้ล็อกอินใหม่ก่อนถึงจะกดปุ่มนี้ได้อยู่แล้ว
+จึงเท่ากับยืนยันรหัสผ่านไปในตัว ไม่ต้องรับรหัสผ่านซ้ำใน body
+
+⚠ เจ้าหน้าที่/แอดมินลบตัวเองทางนี้ไม่ได้: แถวของเขาถูกอ้างจาก checkpoint_staff,
+sos_event.acked_by และประกาศที่เขาเป็นคนส่ง ซึ่งทรานแซกชันลบผู้เข้าร่วมไม่ได้เคลียร์ให้
+· repository กรอง role = 'participant' อยู่แล้วแต่จะตอบเป็น 404 ซึ่งอ่านแล้วงง
+ตรงนี้จึงดู claims.Role ก่อนแล้วตอบ 403 พร้อมบอกว่าให้ติดต่อผู้ดูแลแทน
+*/
+func (h *WBWAdminHandler) DeleteMe(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.ClaimsFrom(r.Context())
+	if claims == nil {
+		middleware.WriteError(w, http.StatusUnauthorized, "ต้องล็อกอินก่อน")
+		return
+	}
+	if claims.Role != "participant" {
+		middleware.WriteError(w, http.StatusForbidden,
+			"บัญชีเจ้าหน้าที่ลบเองไม่ได้ กรุณาติดต่อผู้ดูแลระบบ")
+		return
+	}
+
+	// บันทึก admin_log เขียนอยู่ในทรานแซกชันของ repository แล้ว — ที่นี่จึงไม่เรียก
+	// h.service.Log ตามหลังเหมือน DeleteParticipant ของแอดมิน (ตอนนั้นแถวผู้ใช้หายไปแล้ว
+	// actor_id จะชน FK แล้วบันทึกหายเงียบ · ดูคำอธิบายที่ DeleteOwnAccount)
+	_, err := h.service.DeleteOwnAccount(r.Context(), claims.Subject, claims.Username)
+	switch {
+	case errors.Is(err, repository.ErrNotFound):
+		// token ยังไม่หมดอายุแต่บัญชีถูกลบไปแล้ว (แอดมินลบให้ หรือกดสองแท็บพร้อมกัน)
+		// — ปลายทางที่ผู้ใช้ต้องการคือ "ไม่มีบัญชีนี้แล้ว" ซึ่งเป็นจริงอยู่ ตอบสำเร็จไป
+		middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case err != nil:
+		slog.Error("delete own account failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "ลบบัญชีไม่สำเร็จ")
+	default:
+		middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
 func (h *WBWAdminHandler) ParticipantDetail(w http.ResponseWriter, r *http.Request) {
 	d, err := h.service.ParticipantDetail(r.Context(), chi.URLParam(r, "id"))
 	switch {
@@ -373,6 +417,78 @@ func (h *WBWAdminHandler) DeleteCheckpoint(w http.ResponseWriter, r *http.Reques
 	default:
 		aid, aname := actor(r)
 		h.service.Log(r.Context(), aid, aname, "ลบฐาน", name)
+		middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// GroupStaff GET /wbw/admin/groups/{id}/staff — ใครประจำกลุ่มนี้
+func (h *WBWAdminHandler) GroupStaff(w http.ResponseWriter, r *http.Request) {
+	id, err := intParam(r, "id")
+	if err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
+		return
+	}
+	list, err := h.service.GroupStaff(r.Context(), id)
+	if err != nil {
+		slog.Error("list group staff failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "โหลดรายชื่อไม่สำเร็จ")
+		return
+	}
+	middleware.WriteJSON(w, http.StatusOK, list)
+}
+
+// AssignGroupStaff POST /wbw/admin/groups/{id}/staff — มอบหมายเจ้าหน้าที่ประจำกลุ่ม
+//
+// คนที่ถูกมอบหมายคือคนที่จะเห็น SOS ขั้นแรกของกลุ่มนี้ ก่อนที่จะยกระดับให้ทั้งงานเห็น
+func (h *WBWAdminHandler) AssignGroupStaff(w http.ResponseWriter, r *http.Request) {
+	id, err := intParam(r, "id")
+	if err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
+		return
+	}
+	var req model.AssignStaffRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "ต้องระบุเจ้าหน้าที่")
+		return
+	}
+	username, err := h.service.AssignGroupStaff(r.Context(), id, req.UserID)
+	switch {
+	case errors.Is(err, service.ErrMissingFields):
+		middleware.WriteError(w, http.StatusBadRequest, "ต้องระบุเจ้าหน้าที่")
+	case errors.Is(err, repository.ErrNotFound):
+		middleware.WriteError(w, http.StatusBadRequest, "ไม่พบเจ้าหน้าที่")
+	case repository.IsPGCode(err, "22P02"), repository.IsPGCode(err, "23503"):
+		middleware.WriteError(w, http.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
+	case err != nil:
+		slog.Error("assign group staff failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "มอบหมายไม่สำเร็จ")
+	default:
+		aid, aname := actor(r)
+		h.service.Log(r.Context(), aid, aname, "มอบหมายเจ้าหน้าที่ประจำกลุ่ม", username)
+		middleware.WriteJSON(w, http.StatusCreated, map[string]bool{"ok": true})
+	}
+}
+
+// RemoveGroupStaff DELETE /wbw/admin/groups/{id}/staff/{userId}
+func (h *WBWAdminHandler) RemoveGroupStaff(w http.ResponseWriter, r *http.Request) {
+	id, err := intParam(r, "id")
+	if err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
+		return
+	}
+	userID := chi.URLParam(r, "userId")
+	ok, err := h.service.RemoveGroupStaff(r.Context(), id, userID)
+	switch {
+	case repository.IsPGCode(err, "22P02"):
+		middleware.WriteError(w, http.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
+	case err != nil:
+		slog.Error("remove group staff failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "ถอนการมอบหมายไม่สำเร็จ")
+	case !ok:
+		middleware.WriteError(w, http.StatusNotFound, "ไม่พบการมอบหมายนี้")
+	default:
+		aid, aname := actor(r)
+		h.service.Log(r.Context(), aid, aname, "ถอนเจ้าหน้าที่ประจำกลุ่ม", userID)
 		middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }

@@ -502,6 +502,13 @@ func main() {
 				})
 
 				// คำขอเป็นเจ้าหน้าที่ (สมัครเอง รออนุมัติ)
+				// เจ้าหน้าที่ประจำกลุ่ม — คนที่เห็น SOS ขั้นแรกของกลุ่มนั้น ก่อนยกระดับ
+				r.Route("/groups/{id}/staff", func(r chi.Router) {
+					r.Get("/", wbwAdminHandler.GroupStaff)
+					r.Post("/", wbwAdminHandler.AssignGroupStaff)
+					r.Delete("/{userId}", wbwAdminHandler.RemoveGroupStaff)
+				})
+
 				r.Route("/staff-requests", func(r chi.Router) {
 					r.Get("/", wbwAdminHandler.ListStaffRequests)
 					r.Post("/{id}/approve", wbwAdminHandler.ApproveStaff)
@@ -514,6 +521,9 @@ func main() {
 		r.With(requireAuth).Get("/me", wbwAdminHandler.Me)
 		// แก้ได้เฉพาะรูปตัวเอง — ฟิลด์อื่นเป็นของ admin (ดู UpdateOwnPhoto)
 		r.With(requireAuth).Patch("/me", wbwAdminHandler.PatchMe)
+		// ลบบัญชีตัวเอง — หน้า /privacy ของเว็บและหน้าตั้งค่าของแอปเรียกตัวนี้
+		// ลบทันที ไม่ใช่คำขอที่รออนุมัติ (สโตร์บังคับ) · เฉพาะ role participant
+		r.With(requireAuth).Delete("/me", wbwAdminHandler.DeleteMe)
 		// รายการฐานทั้งงาน — **ไม่ใช่ของแอดมิน** ของแอดมินที่ /admin/checkpoints คืนรายชื่อ
 		// เจ้าหน้าที่ประจำฐานมาด้วย ซึ่งผู้เข้าร่วมไม่ควรได้ · ตัวนี้คืนแค่ชื่อ/กิจกรรม/ชนิด
 		//
@@ -524,6 +534,9 @@ func main() {
 		r.With(requireAuth).Get("/me/progress", wbwProgressHandler.MyProgress)
 		// ความเห็นต่อฐาน — ผู้เข้าร่วมส่งของตัวเอง
 		r.With(requireAuth).Post("/me/feedback", wbwFeedbackHandler.Submit)
+		// ความเห็นต่อการเดินทั้งงาน — แอปถามครั้งเดียวตอนเช็คอินครบทุกฐาน · ตารางแยกจาก
+		// checkin_feedback เพราะไม่ได้ผูกกับฐานไหน (ดู migration 000033)
+		r.With(requireAuth).Post("/me/event-feedback", wbwFeedbackHandler.SubmitEvent)
 
 		// SOS ฉุกเฉิน — กดได้จากทุกหน้า ไม่ผูกกับฐานไหน
 		r.With(requireAuth).Post("/me/sos", wbwSOSHandler.Raise)
@@ -569,6 +582,8 @@ func main() {
 			r.Get("/sos", wbwSOSHandler.StaffFeed)
 			r.Post("/sos/{id}/ack", wbwSOSHandler.Ack)
 			r.Post("/sos/{id}/resolve", wbwSOSHandler.Resolve)
+			// รายงานผลหลังไปถึง — ปิดเคสหรือยกระดับ แล้วแต่ outcome (ดู service.Report)
+			r.Post("/sos/{id}/report", wbwSOSHandler.Report)
 		})
 
 		r.Route("/notifications", func(r chi.Router) {

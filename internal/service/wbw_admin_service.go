@@ -95,6 +95,15 @@ func (s *WBWAdminService) DeleteParticipant(ctx context.Context, id string) (str
 	return s.admin.DeleteParticipant(ctx, id)
 }
 
+// DeleteOwnAccount — ผู้เข้าร่วมลบบัญชีตัวเอง (DELETE /wbw/me)
+//
+// ไม่มีกติกาเพิ่มจาก DeleteParticipant: repository กรอง role = 'participant' ไว้แล้ว
+// จึงลบบัญชีเจ้าหน้าที่/แอดมินผ่านทางนี้ไม่ได้แม้ token จะถูกต้อง (handler ปัดตั้งแต่
+// ดู claims.Role ไปแล้วอีกชั้น เพื่อให้ได้ 403 ที่อ่านรู้เรื่องแทน 404 ที่ชวนงง)
+func (s *WBWAdminService) DeleteOwnAccount(ctx context.Context, id, username string) (string, error) {
+	return s.admin.DeleteOwnAccount(ctx, id, username)
+}
+
 /* ---------- checkpoints ---------- */
 
 func (s *WBWAdminService) ListCheckpoints(ctx context.Context) ([]model.Checkpoint, error) {
@@ -161,6 +170,22 @@ func (s *WBWAdminService) AssignStaff(ctx context.Context, checkpointID int, use
 
 func (s *WBWAdminService) RemoveStaff(ctx context.Context, checkpointID int, userID string) (bool, error) {
 	return s.cp.RemoveStaff(ctx, checkpointID, userID)
+}
+
+// เจ้าหน้าที่ประจำกลุ่ม — ใครได้เห็น SOS ขั้นแรกของกลุ่มนั้น (ดู staffVisibility)
+func (s *WBWAdminService) AssignGroupStaff(ctx context.Context, groupID int, userID string) (string, error) {
+	if strings.TrimSpace(userID) == "" {
+		return "", ErrMissingFields
+	}
+	return s.cp.AssignGroupStaff(ctx, groupID, userID)
+}
+
+func (s *WBWAdminService) RemoveGroupStaff(ctx context.Context, groupID int, userID string) (bool, error) {
+	return s.cp.RemoveGroupStaff(ctx, groupID, userID)
+}
+
+func (s *WBWAdminService) GroupStaff(ctx context.Context, groupID int) ([]model.StaffRef, error) {
+	return s.cp.GroupStaff(ctx, groupID)
 }
 
 /* ---------- staff / admin accounts ---------- */
