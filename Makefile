@@ -27,9 +27,30 @@ export
 #
 # Override per invocation to hit another box or the tunnel:
 #   make get-events API=https://api.studentunion.social
+#   make get-events PROD=1                 # the same thing, without typing it
 SERVER_HOST ?= localhost
 SERVER_PORT ?= 8080
+
+# The live hostname, in one place. It is the NAMED Cloudflare tunnel — see the
+# `up-prod` target and docker-compose.yml. Nothing in Go reads this; it only
+# aims the httpie helpers below.
+API_PROD ?= https://api.studentunion.social
+
+# PROD=1 aims every helper at the live server.
+#
+# Deliberately opt-in per invocation rather than a variable somebody sets once
+# and forgets: these targets create admins, promote staff and reset
+# leaderboards, and the difference between doing that on a laptop and doing it
+# on the live box should be visible in the command you typed.
+#
+# A command-line `API=` still wins over this — make gives command-line
+# variables precedence over an assignment in the file — so the explicit URL
+# remains the final say.
+ifeq ($(PROD),1)
+API := $(API_PROD)
+else
 API ?= http://$(SERVER_HOST):$(SERVER_PORT)
+endif
 
 SU  := $(API)/su-server
 WBW := $(API)/wbw
@@ -217,6 +238,35 @@ wbw-login: ## Log in, print the token: make wbw-login user=... pass=...
 
 wbw-me: ## Own profile
 	http GET $(WBW)/me $(AUTH)
+
+# ความคืบหน้าเช็คอิน — แอปใช้ตัดสินว่าจะเปิดฟอร์มความเห็นไหม
+# `event_feedback_answered` ในผลลัพธ์คือสิ่งที่บอกว่าเคยตอบความเห็นต่อการเดินไปแล้วหรือยัง
+wbw-progress: ## Own check-in progress (drives the feedback gate in the app)
+	http GET $(WBW)/me/progress $(AUTH)
+
+# ความเห็นต่อฐาน — rating บังคับ 1-5 ที่เหลือไม่บังคับ
+#   make wbw-feedback cp=7 rating=5 scenery=5 area=4 TOKEN=...
+wbw-feedback: ## Rate one base: make wbw-feedback cp=7 rating=5 [scenery=] [area=] [activity=] [staff=] [comment=]
+	$(call require,cp,make wbw-feedback cp=7 rating=5 TOKEN=...)
+	$(call require,rating,make wbw-feedback cp=7 rating=5 TOKEN=...)
+	@http POST $(WBW)/me/feedback $(AUTH) \
+		client_id="$$(uuidgen)" checkpoint_id:=$(cp) rating:=$(rating) \
+		$(if $(scenery),rating_scenery:=$(scenery)) \
+		$(if $(area),rating_area:=$(area)) \
+		$(if $(activity),rating_activity:=$(activity)) \
+		$(if $(staff),rating_staff:=$(staff)) \
+		$(if $(comment),comment="$(comment)") \
+		device_time="$$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# ความเห็นต่อการเดินทั้งงาน — ไม่ผูกกับฐานไหน ตอบได้ครั้งเดียวต่อคน (ตาราง event_feedback)
+#   make wbw-event-feedback rating=5 activity=4 TOKEN=...
+wbw-event-feedback: ## Rate the whole walk: make wbw-event-feedback rating=5 [activity=] [comment=]
+	$(call require,rating,make wbw-event-feedback rating=5 TOKEN=...)
+	@http POST $(WBW)/me/event-feedback $(AUTH) \
+		client_id="$$(uuidgen)" rating:=$(rating) \
+		$(if $(activity),rating_activity:=$(activity)) \
+		$(if $(comment),comment="$(comment)") \
+		device_time="$$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ที่นั่งคงเหลือ — เปิดสาธารณะ ไม่ต้องมี token
 wbw-capacity: ## Seats left in the 2,000-participant cap
