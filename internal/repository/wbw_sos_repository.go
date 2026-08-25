@@ -336,6 +336,24 @@ func (r *WBWSOSRepository) Resolve(ctx context.Context, id int64, staffID, reaso
 	return nil
 }
 
+// SetSeverity — ตีระดับความรุนแรงให้เคสที่ยัง "เปิด" อยู่
+//
+// ไม่ปิดเคส ตั้งใจ · updated_at ถูกดันด้วยเพราะมันคือ cursor ของ long-poll — ไม่ดัน
+// เท่ากับจอเจ้าหน้าที่คนอื่นไม่รู้เลยว่าเคสเพิ่งถูกยกระดับ จนกว่าจะมีอย่างอื่นมาเปลี่ยนแถวนี้
+func (r *WBWSOSRepository) SetSeverity(ctx context.Context, id int64, staffID, severity string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE sos_event
+		   SET severity = $3, severity_by = $2::uuid, severity_at = now(), updated_at = now()
+		 WHERE id = $1 AND NOT resolved`, id, staffID, severity)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSOSNotFound
+	}
+	return nil
+}
+
 // MarkPushed — จดว่าเพิ่งยิง push ไปเมื่อไหร่ · ตัว rate limit ของการ "ย้ำ"
 func (r *WBWSOSRepository) MarkPushed(ctx context.Context, id int64) error {
 	_, err := r.db.Exec(ctx, `UPDATE sos_event SET last_push_at = now() WHERE id = $1`, id)
@@ -353,21 +371,56 @@ func (r *WBWSOSRepository) PushAllowed(ctx context.Context, id int64) (bool, err
 
 // staffVisibility — เงื่อนไข WHERE ที่ตัดสินว่าเจ้าหน้าที่คนหนึ่งเห็นเคสไหนได้บ้าง
 //
-// สี่ทางที่ทำให้เห็น เรียงตามความตั้งใจ:
-//  1. เป็นฐานที่ตัวเองถูก assign
-//  2. เคสไม่มีฐาน (ไม่มีพิกัดเลย) — ไม่มีใครเป็นเจ้าของ ทุกคนจึงต้องเห็น
-//  3. ฐานนั้นไม่มีใครถูก assign เลย — "ไม่มีใครถูกมอบหมาย = ทุกคนเห็น" ปลอดภัยกว่า
-//     "ไม่มีใครเห็น" และเป็นตาข่ายรองรับ checkpoint_staff ที่ยังว่างบน production
-//  4. พิกัดไม่แม่นพอ (accuracy_m > 200 เมตร) — ฐานที่คำนวณได้ไม่น่าเชื่อถือพอจะใช้จำกัดว่าใคร
-//     ควรเห็น ให้ทุกคนเห็นไว้ก่อนปลอดภัยกว่าไปผูกกับฐานที่อาจคำนวณผิด
+// สองขั้น ตามลำดับที่เกิดจริงหน้างาน:
 //
-// admin กับ medical/security ไม่เข้าเงื่อนไขนี้เลย — เห็นทุกเคสอยู่แล้ว
+// **ขั้นแรก (escalated = FALSE)** — เห็นเฉพาะเจ้าหน้าที่ประจำกลุ่มของคนที่กด เพราะคนนั้น
+// เดินอยู่กับกลุ่มและรู้ว่าเรื่องจริงหรือกดโดน · แอดมินเห็นด้วยเสมอ (จัดการที่
+// seesEverything) เป็นตาข่ายรองรับกรณีเจ้าหน้าที่ประจำกลุ่มแบตหมดหรือไม่ได้ดูจอ
+//
+// **ขั้นสอง (escalated = TRUE)** — ยืนยันแล้วว่าเป็นเรื่องจริง เจ้าหน้าที่ทุกคนเห็น โดยยัง
+// กรองด้วยฐานแบบเดิมไว้ ไม่ใช่เพื่อปิดกั้นแต่เพื่อเรียงความเกี่ยวข้อง — และเงื่อนไข
+// fail-open สามข้อเดิมยังอยู่ครบ (ไม่มีฐาน / ฐานไม่มีคนดูแล / พิกัดหยาบเกิน 200 ม.)
+//
+// ทั้งสองขั้นตกกลับไปหา "ทุกคนเห็น" เมื่อกลุ่มไม่มีเจ้าหน้าที่ประจำเลย หรือเคสไม่มีกลุ่ม —
+// group_staff เป็นตารางใหม่และวันแรกมันจะว่าง · "ไม่มีใครถูกมอบหมาย = ทุกคนเห็น" ปลอดภัย
+// กว่า "ไม่มีใครเห็น" เสมอ และนี่คือเหตุผลเดียวกับที่ checkpoint_staff ทำแบบนี้อยู่แล้ว
 const staffVisibility = `(
-	  s.checkpoint_id IS NULL
-	  OR s.checkpoint_id IN (SELECT checkpoint_id FROM checkpoint_staff WHERE user_id = $1::uuid)
-	  OR NOT EXISTS (SELECT 1 FROM checkpoint_staff cs WHERE cs.checkpoint_id = s.checkpoint_id)
-	  OR s.accuracy_m > 200
+	  CASE WHEN NOT s.escalated THEN
+	    -- ขั้นแรก: เจ้าหน้าที่ประจำกลุ่มเท่านั้น (แอดมินไม่ผ่านทางนี้ ผ่าน seesEverything)
+	    s.group_id IN (SELECT group_id FROM group_staff WHERE user_id = $1::uuid)
+	    -- ...เว้นแต่ไม่มีใครประจำกลุ่มนั้น หรือเคสไม่รู้ว่ากลุ่มไหน แล้วให้ทุกคนเห็น
+	    OR s.group_id IS NULL
+	    OR NOT EXISTS (SELECT 1 FROM group_staff gs WHERE gs.group_id = s.group_id)
+	  ELSE
+	    -- ขั้นสอง: SOS จริง — เปิดกว้างตามเดิม
+	    s.checkpoint_id IS NULL
+	    OR s.checkpoint_id IN (SELECT checkpoint_id FROM checkpoint_staff WHERE user_id = $1::uuid)
+	    OR NOT EXISTS (SELECT 1 FROM checkpoint_staff cs WHERE cs.checkpoint_id = s.checkpoint_id)
+	    OR s.accuracy_m > 200
+	    OR s.group_id IN (SELECT group_id FROM group_staff WHERE user_id = $1::uuid)
+	  END
 	)`
+
+// Escalate — ยืนยันว่าเป็นเรื่องจริง แล้วเปิดให้เจ้าหน้าที่ทุกคนเห็น
+//
+// เขียนซ้ำได้ (idempotent): กดยกระดับสองครั้งไม่ทำให้ escalated_at ขยับ เพราะเวลาที่
+// อยากรู้คือ "ยกระดับครั้งแรกเมื่อไหร่" ไม่ใช่ครั้งล่าสุด
+func (r *WBWSOSRepository) Escalate(ctx context.Context, id int64, staffID string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE sos_event
+		   SET escalated = TRUE,
+		       escalated_at = COALESCE(escalated_at, now()),
+		       escalated_by = COALESCE(escalated_by, $2::uuid),
+		       updated_at = now()
+		 WHERE id = $1 AND NOT resolved`, id, staffID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSOSNotFound
+	}
+	return nil
+}
 
 // seesEverything — บทบาทที่เห็นทุกเคสโดยไม่สนใจฐาน
 func (r *WBWSOSRepository) seesEverything(ctx context.Context, userID, role string) (bool, error) {
@@ -439,7 +492,8 @@ func (r *WBWSOSRepository) StaffFeed(ctx context.Context, staffID, role, since s
 		var c model.SOSStaffCase
 		if err := rows.Scan(&c.ID, &c.ForOther, &c.Lat, &c.Lng, &c.AccuracyM, &c.LocSource,
 			&c.CheckpointID, &c.CheckpointName, &c.Message, &c.Resolved, &c.ResolveReason,
-			&c.AckedAt, &c.AckedByName, &c.CreatedAt, &c.GroupID, &c.UpdatedAt,
+			&c.AckedAt, &c.AckedByName, &c.CreatedAt, &c.GroupID, &c.Severity, &c.Escalated,
+			&c.UpdatedAt,
 			&c.ParticipantID, &c.FirstName, &c.LastName, &c.Bib, &c.GroupNumber,
 			&c.ContactPhone, &c.EmergencyName, &c.EmergencyPh,
 			&c.BloodType, &c.HealthNotes); err != nil {
@@ -472,7 +526,8 @@ const sosUpdatedAtExpr = `to_char(s.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T
 const sosStaffSelect = `
 	SELECT s.id, s.for_other, s.lat, s.lng, s.accuracy_m, s.loc_source,
 	       s.checkpoint_id, c.name, s.message, s.resolved, s.resolve_reason,
-	       s.acked_at::text, ack.display_name, s.server_received_at::text, s.group_id,
+	       s.acked_at::text, ack.display_name, s.server_received_at::text, s.group_id, s.severity,
+	       s.escalated,
 	       ` + sosUpdatedAtExpr + `,
 	       s.participant_id::text, COALESCE(p.first_name,''), COALESCE(p.last_name,''),
 	       p.bib_number, g.group_number,

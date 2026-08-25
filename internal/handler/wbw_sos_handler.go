@@ -173,6 +173,42 @@ func (h *WBWSOSHandler) Ack(w http.ResponseWriter, r *http.Request) {
 }
 
 // Resolve POST /wbw/staff/sos/{id}/resolve
+// Report POST /wbw/staff/sos/{id}/report — เจ้าหน้าที่รายงานผลหลังไปถึงเคส
+//
+// body: {"outcome": "false_alarm" | "minor" | "major" | "urgent"}
+//
+// false_alarm/minor ปิดเคส · major/urgent ไม่ปิด แค่ยกระดับ — ตัวตัดสินอยู่ใน service
+// ไม่ใช่ที่นี่และไม่ใช่ที่แอป
+func (h *WBWSOSHandler) Report(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.ClaimsFrom(r.Context())
+	if claims == nil {
+		middleware.WriteError(w, http.StatusUnauthorized, "ต้องล็อกอินก่อน")
+		return
+	}
+	id, err := sosIDParam(r)
+	if err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "เลขเคสไม่ถูกต้อง")
+		return
+	}
+	var req model.SOSReportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "รูปแบบข้อมูลไม่ถูกต้อง")
+		return
+	}
+
+	switch err := h.service.Report(r.Context(), claims.Subject, claims.Role, id, req.Outcome); {
+	case err == nil:
+		middleware.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case errors.Is(err, service.ErrSOSBadReason):
+		middleware.WriteError(w, http.StatusBadRequest, "ผลการรายงานไม่ถูกต้อง")
+	case errors.Is(err, repository.ErrSOSNotFound):
+		middleware.WriteError(w, http.StatusNotFound, "ไม่พบเคสนี้")
+	default:
+		slog.Error("รายงานผลเคส SOS ไม่สำเร็จ", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "รายงานผลไม่สำเร็จ")
+	}
+}
+
 func (h *WBWSOSHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.ClaimsFrom(r.Context())
 	if claims == nil {

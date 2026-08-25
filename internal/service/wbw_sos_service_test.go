@@ -147,3 +147,7 @@ func TestResolveAcceptsEveryReasonInTheSpec(t *testing.T) {
 		}
 	}
 }
+
+func (f *fakeSOSRepo) SetSeverity(context.Context, int64, string, string) error { return nil }
+
+func (f *fakeSOSRepo) Escalate(context.Context, int64, string) error { return nil }

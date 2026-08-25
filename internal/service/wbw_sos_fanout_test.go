@@ -294,3 +294,7 @@ func TestCancelPushesGroupWithCanceledWording(t *testing.T) {
 	}
 	assertNoMorePush(t, push.sent)
 }
+
+func (f *fanoutFakeRepo) SetSeverity(context.Context, int64, string, string) error { return nil }
+
+func (f *fanoutFakeRepo) Escalate(context.Context, int64, string) error { return nil }
