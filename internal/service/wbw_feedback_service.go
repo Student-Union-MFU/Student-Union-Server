@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	ErrBadRating = errors.New("rating must be 1..3")
+	ErrBadRating = errors.New("rating must be 1..5")
 	// ErrFeedbackMissingClientID — ตั้งชื่อแยกจาก wbw_chat_service.ErrMissingClientID
 	// (ข้อความเดียวกันแต่คนละ error value) เพราะสอง var ชื่อซ้ำใน package เดียวกันคอมไพล์ไม่ผ่าน
 	ErrFeedbackMissingClientID = errors.New("missing client_id")
@@ -28,6 +28,7 @@ var (
 // (ดู wbw_feedback_repository_test.go)
 type feedbackRepo interface {
 	Submit(ctx context.Context, participantID string, req model.FeedbackRequest) (*model.CheckinFeedback, bool, error)
+	SubmitEvent(ctx context.Context, participantID string, req model.EventFeedbackRequest) (*model.EventFeedback, bool, error)
 	ListAll(ctx context.Context) ([]model.AdminFeedbackRow, error)
 	SummaryByCheckpoint(ctx context.Context) ([]model.FeedbackSummary, error)
 }
@@ -45,8 +46,14 @@ func (s *WBWFeedbackService) Submit(ctx context.Context, participantID string, r
 	if strings.TrimSpace(req.ClientID) == "" {
 		return nil, false, ErrFeedbackMissingClientID
 	}
-	if req.Rating < 1 || req.Rating > 3 {
+	if req.Rating < 1 || req.Rating > 5 {
 		return nil, false, ErrBadRating
+	}
+	// ข้อย่อยตรวจเฉพาะที่ส่งมา — ไม่ส่งคือไม่ตอบ ซึ่งต่างจากตอบผิดช่วง
+	for _, r := range []*int{req.RatingScenery, req.RatingActivity, req.RatingStaff, req.RatingArea} {
+		if r != nil && (*r < 1 || *r > 5) {
+			return nil, false, ErrBadRating
+		}
 	}
 	if req.Comment != nil {
 		trimmed := strings.TrimSpace(*req.Comment)
@@ -57,6 +64,32 @@ func (s *WBWFeedbackService) Submit(ctx context.Context, participantID string, r
 		}
 	}
 	return s.repo.Submit(ctx, participantID, req)
+}
+
+// SubmitEvent — ความเห็นต่อการเดินทั้งงาน · ตรวจเหมือน Submit ทุกอย่างที่ตรวจได้
+//
+// ไม่ตรวจว่าเดินครบทุกฐานหรือยัง ทั้งที่แอปถามตอนครบเท่านั้น — เงื่อนไข "เมื่อไรจึงถาม"
+// เป็นเรื่องของแอป ส่วนตรงนี้เป็นเรื่องของ "รับได้ไหม" คนที่ถอนตัวกลางทางแล้วอยากบอกว่า
+// ทำไม คือคนที่ผู้จัดอยากได้ยินที่สุด และการบังคับให้ครบก่อนคือการปิดปากเขาพอดี
+func (s *WBWFeedbackService) SubmitEvent(ctx context.Context, participantID string, req model.EventFeedbackRequest) (*model.EventFeedback, bool, error) {
+	if strings.TrimSpace(req.ClientID) == "" {
+		return nil, false, ErrFeedbackMissingClientID
+	}
+	if req.Rating < 1 || req.Rating > 5 {
+		return nil, false, ErrBadRating
+	}
+	if req.RatingActivity != nil && (*req.RatingActivity < 1 || *req.RatingActivity > 5) {
+		return nil, false, ErrBadRating
+	}
+	if req.Comment != nil {
+		trimmed := strings.TrimSpace(*req.Comment)
+		if trimmed == "" {
+			req.Comment = nil
+		} else {
+			req.Comment = &trimmed
+		}
+	}
+	return s.repo.SubmitEvent(ctx, participantID, req)
 }
 
 func (s *WBWFeedbackService) AdminList(ctx context.Context) (*model.AdminFeedbackResponse, error) {
