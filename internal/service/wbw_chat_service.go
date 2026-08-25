@@ -49,7 +49,7 @@ func NewWBWChatService(repo *repository.WBWChatRepository, events *ChatEvents, p
 }
 
 func (s *WBWChatService) guard(ctx context.Context, userID string, groupID int) error {
-	ok, err := s.repo.IsMember(ctx, userID, groupID)
+	ok, err := s.repo.CanUseGroupChat(ctx, userID, groupID)
 	if err != nil {
 		return err
 	}
