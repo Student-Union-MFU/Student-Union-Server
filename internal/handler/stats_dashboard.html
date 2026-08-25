@@ -136,11 +136,20 @@
        instead of one, on a page two people will ever open. -->
   <section id="signin" class="card">
     <h2>Staff sign-in</h2>
-    <ol>
-      <li><span>Open <a id="googleLink" href="/su-server/auth/google" target="_blank" rel="noopener">Sign in with Google</a></span> — it ends on a page of JSON.</li>
-      <li>Copy the value of <code>"token"</code> from that page.</li>
-      <li>Paste it below. It is kept in this browser's localStorage and sent as a bearer token; nothing else on this page stores anything.</li>
-    </ol>
+    <p class="note" style="margin-top:0;">
+      <a id="googleLink" href="/su-server/auth/google?redirect=stats">Sign in with Google →</a>
+      Comes straight back here signed in. The token is kept in this browser's
+      localStorage and sent as a bearer token; nothing else on this page stores
+      anything.
+    </p>
+    <details>
+      <summary class="note" style="cursor:pointer;">Paste a token instead</summary>
+      <ol>
+        <li><span>Open <a href="/su-server/auth/google" target="_blank" rel="noopener">/su-server/auth/google</a></span> with no <code>?redirect=</code> — it ends on a page of JSON.</li>
+        <li>Copy the value of <code>"token"</code> from that page.</li>
+        <li>Paste it below.</li>
+      </ol>
+    </details>
     <form id="tokenForm">
       <label for="token">SU staff token</label>
       <textarea id="token" rows="3" spellcheck="false" autocomplete="off" placeholder="eyJhbGciOiJIUzI1NiIs..."></textarea>
@@ -659,6 +668,30 @@
 
   const savedInterval = localStorage.getItem(INTERVAL_KEY);
   if (savedInterval) $("interval").value = savedInterval;
+
+  /*
+    Pick the token out of the fragment the OAuth callback redirected us with.
+
+    It is read and then immediately erased from the address bar with
+    replaceState: a fragment never reaches the server, but it does sit in the
+    URL bar and in session history, where a screenshot during an incident or a
+    back-button press on a shared machine would expose a live staff token.
+    replaceState rewrites the current entry rather than adding one, so Back
+    still goes wherever the operator actually came from.
+
+    Wrapped because a malformed hash must not take the page down — falling
+    through to the sign-in screen is recoverable, a thrown exception before any
+    of the wiring below runs is not.
+  */
+  try {
+    const m = location.hash.match(/^#token=(.+)$/);
+    if (m) {
+      localStorage.setItem(TOKEN_KEY, decodeURIComponent(m[1]));
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  } catch (e) {
+    /* keep going — the sign-in screen below is the fallback */
+  }
 
   if (localStorage.getItem(TOKEN_KEY)) enterDash();
   else show("signin");

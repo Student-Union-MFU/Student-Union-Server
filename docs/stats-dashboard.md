@@ -52,6 +52,36 @@ Both are guarded against a divide-by-zero that would emit `NaN`;
 
 Everything else in this document still needs building.
 
+> **Update, 2026-08-25 — there are now two dashboards, and this section
+> describes only the first.**
+>
+> The embedded page below was built as specified and is still served at
+> `GET /su-server/stats`. Alongside it there is now a **Next.js app** in the
+> `su-server-stats-dashboard` repo, which is the richer everyday view; its
+> README explains the split.
+>
+> Keeping both is deliberate rather than indecisive. The embedded page needs no
+> build step and no Node, so it works when the Next app does not — which is
+> exactly the situation a stats page exists for. It is the floor, not the
+> superseded version.
+>
+> Two things below are therefore now half-true:
+>
+> - **"No build step, no npm"** applies to the embedded page. The Next app has
+>   both, and buys with them an HttpOnly session cookie and a server-side proxy
+>   — neither of which the embedded page can have, because it has no server of
+>   its own.
+> - **The auth pattern.** The Next app does not put a token in `localStorage`.
+>   It proxies every call through `app/api/su/[...path]`, so the browser never
+>   holds the credential and never makes a cross-origin request. su-server
+>   gained a `?redirect=` allowlist (`oauthRedirectTargets` in
+>   `oauth_handler.go`) so the Google callback can land in either dashboard
+>   rather than on a page of JSON to copy out of.
+>
+> The argument against **Prometheus + Grafana** is untouched and still stands:
+> the objection was two more containers on a memory-pressured box, not a build
+> step.
+
 ## Architecture: embed it in the Go binary
 
 **Do this**, following `internal/handler/clubfair_dashboard.html`:

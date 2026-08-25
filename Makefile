@@ -268,7 +268,20 @@ delete-event: ## Delete an event (staff token): make delete-event id=1
 ##@ SU API — users
 # ============================================================
 
-.PHONY: get-user get-user-email insert-user upsert-user update-user
+.PHONY: su-staff get-user get-user-email insert-user upsert-user update-user
+
+# Promotes an account that already exists. The person has to sign in once
+# first: this does not create a row, because users.oauth_subject is what Google
+# sign-in joins on, and a row invented here is one their real sign-in would
+# never find.
+#
+# Nothing else in the server can produce a staff account — ExchangeCode creates
+# every Google sign-in as `student`, and no migration seeds one — so without
+# this, every /su-server/admin route, the stats dashboard included, is closed
+# to everybody. See cmd/createsustaff/main.go.
+su-staff: ## Promote an SU account: make su-staff email=... type=staff
+	$(call require,email,make su-staff email=6831503029@lamduan.mfu.ac.th type=staff)
+	go run cmd/createsustaff/main.go "$(email)" "$(or $(type),staff)"
 
 # GET/PATCH on a user are self-or-staff: the token must belong to that id, or
 # to a staff account.
