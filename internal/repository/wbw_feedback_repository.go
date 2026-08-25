@@ -28,11 +28,12 @@ func NewWBWFeedbackRepository(db *pgxpool.Pool) *WBWFeedbackRepository {
 
 // created_at ต้อง ::text — pgx v5 โหมด binary คืน timestamptz เป็น time.Time
 // scan ตรงเข้า *string ไม่ได้ (ทรงเดียวกับที่ repository ตัวอื่นในนี้ทำ)
-const feedbackCols = `id, checkpoint_id, rating, comment, created_at::text`
+const feedbackCols = `id, checkpoint_id, rating, rating_scenery, rating_activity, rating_staff, rating_area, comment, created_at::text`
 
 func scanFeedback(row pgx.Row) (*model.CheckinFeedback, error) {
 	var f model.CheckinFeedback
-	if err := row.Scan(&f.ID, &f.CheckpointID, &f.Rating, &f.Comment, &f.CreatedAt); err != nil {
+	if err := row.Scan(&f.ID, &f.CheckpointID, &f.Rating, &f.RatingScenery, &f.RatingActivity,
+		&f.RatingStaff, &f.RatingArea, &f.Comment, &f.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &f, nil
@@ -79,10 +80,14 @@ func (r *WBWFeedbackRepository) Submit(ctx context.Context, participantID string
 	// เราเพิ่ง insert ไปก่อน = แข่งกับตัวเอง ไม่ใช่ error) หรือ (participant, checkpoint)
 	// เดียวกัน (ตอบไปแล้วจริงด้วย client_id อื่น)
 	created, err := scanFeedback(r.db.QueryRow(ctx, `
-		INSERT INTO checkin_feedback (participant_id, checkpoint_id, rating, comment, client_id, device_time)
-		VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6::timestamptz)
+		INSERT INTO checkin_feedback (participant_id, checkpoint_id, rating,
+		                              rating_scenery, rating_activity, rating_staff, rating_area,
+		                              comment, client_id, device_time)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::uuid, $10::timestamptz)
 		RETURNING `+feedbackCols,
-		participantID, req.CheckpointID, req.Rating, req.Comment, req.ClientID, req.DeviceTime))
+		participantID, req.CheckpointID, req.Rating,
+		req.RatingScenery, req.RatingActivity, req.RatingStaff, req.RatingArea,
+		req.Comment, req.ClientID, req.DeviceTime))
 	if err != nil {
 		if IsPGCode(err, "23505") {
 			// เช็ค client_id ของเราเองก่อน — ถ้าเจอ แปลว่า request อื่นที่ client_id เดียวกัน
@@ -105,6 +110,66 @@ func (r *WBWFeedbackRepository) Submit(ctx context.Context, participantID string
 				return nil, false, qerr
 			}
 			return nil, false, ErrAlreadyAnswered{Existing: prev}
+		}
+		return nil, false, err
+	}
+	return created, true, nil
+}
+
+// ErrEventAlreadyAnswered — ตอบความเห็นต่อการเดินไปแล้วด้วย client_id อื่น
+type ErrEventAlreadyAnswered struct{ Existing *model.EventFeedback }
+
+func (e ErrEventAlreadyAnswered) Error() string { return "already answered" }
+
+const eventFeedbackCols = `id, rating, rating_activity, comment, created_at::text`
+
+func scanEventFeedback(row pgx.Row) (*model.EventFeedback, error) {
+	var f model.EventFeedback
+	if err := row.Scan(&f.ID, &f.Rating, &f.RatingActivity, &f.Comment, &f.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// SubmitEvent — บันทึกความเห็นต่อการเดินทั้งงาน
+//
+// ทรงเดียวกับ Submit ด้านบนโดยตั้งใจ — client_id เดิมคือ retry ไม่ใช่ error, และ 23505
+// แยกสองสาเหตุด้วยการไล่ดู client_id ของตัวเองก่อน แต่ไม่มีขั้น "เคยเช็คอินไหม" เพราะ
+// ความเห็นนี้ไม่ได้ผูกกับฐาน เงื่อนไข "เดินครบแล้วหรือยัง" อยู่ที่แอปซึ่งเป็นฝ่ายเลือกว่า
+// จะถามเมื่อไร — ไม่บังคับซ้ำที่นี่ เพราะคนที่อยากบอกว่างานเป็นอย่างไรทั้งที่ยังเดินไม่ครบ
+// (ถอนตัวกลางทาง เจ็บ ฝนตก) เป็นคนที่ผู้จัดอยากได้ยินมากที่สุด และ 403 จะปิดปากเขาพอดี
+func (r *WBWFeedbackRepository) SubmitEvent(ctx context.Context, participantID string, req model.EventFeedbackRequest) (*model.EventFeedback, bool, error) {
+	existing, err := scanEventFeedback(r.db.QueryRow(ctx,
+		`SELECT `+eventFeedbackCols+` FROM event_feedback WHERE client_id = $1::uuid`, req.ClientID))
+	if err == nil {
+		return existing, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
+	}
+
+	created, err := scanEventFeedback(r.db.QueryRow(ctx, `
+		INSERT INTO event_feedback (participant_id, rating, rating_activity, comment, client_id, device_time)
+		VALUES ($1::uuid, $2, $3, $4, $5::uuid, $6::timestamptz)
+		RETURNING `+eventFeedbackCols,
+		participantID, req.Rating, req.RatingActivity, req.Comment, req.ClientID, req.DeviceTime))
+	if err != nil {
+		if IsPGCode(err, "23505") {
+			own, oerr := scanEventFeedback(r.db.QueryRow(ctx,
+				`SELECT `+eventFeedbackCols+` FROM event_feedback WHERE client_id = $1::uuid`, req.ClientID))
+			if oerr == nil {
+				return own, false, nil
+			}
+			if !errors.Is(oerr, pgx.ErrNoRows) {
+				return nil, false, oerr
+			}
+
+			prev, qerr := scanEventFeedback(r.db.QueryRow(ctx,
+				`SELECT `+eventFeedbackCols+` FROM event_feedback WHERE participant_id = $1::uuid`, participantID))
+			if qerr != nil {
+				return nil, false, qerr
+			}
+			return nil, false, ErrEventAlreadyAnswered{Existing: prev}
 		}
 		return nil, false, err
 	}

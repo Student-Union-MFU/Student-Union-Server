@@ -27,7 +27,23 @@ const sosNotifyTimeout = 15 * time.Second
 
 var validResolveReasons = map[string]bool{
 	"helped": true, "false_alarm": true, "unreachable": true, "canceled_by_user": true,
+	// minor — เจ้าหน้าที่ไปถึงแล้ว จัดการจบตรงนั้น · ปิดเคสเหมือน helped แต่บันทึกไว้ว่าเป็นเรื่องเล็ก
+	"minor": true,
 }
+
+// sosReportOutcomes — สิ่งที่เจ้าหน้าที่ "รายงาน" กลับมาหลังไปถึงตัวคน
+//
+// สองอันแรกปิดเคส สองอันหลังไม่ปิด — เป็นการยกระดับ เคสยังค้างอยู่ในหน้า console ของทุกคน
+// เพราะสิ่งที่ยังต้องการคนไม่ควรหายไปจากจอเพียงเพราะมีคนไปถึงแล้ว
+var sosReportOutcomes = map[string]bool{
+	"false_alarm": true, // ปิด — ไม่มีอะไรเกิดขึ้นจริง
+	"minor":       true, // ปิด — จบหน้างานแล้ว
+	"major":       true, // ไม่ปิด — ยกระดับ
+	"urgent":      true, // ไม่ปิด — ยกระดับสูงสุด
+}
+
+// sosReportCloses — outcome ไหนปิดเคส · ที่เหลือแค่ตีระดับ
+var sosReportCloses = map[string]bool{"false_alarm": true, "minor": true}
 
 type sosRepo interface {
 	Checkpoints(ctx context.Context) ([]repository.CheckpointGeo, error)
@@ -39,6 +55,8 @@ type sosRepo interface {
 	Cancel(ctx context.Context, participantID string, id int64) error
 	Ack(ctx context.Context, id int64, staffID string) error
 	Resolve(ctx context.Context, id int64, staffID, reason string) error
+	SetSeverity(ctx context.Context, id int64, staffID, severity string) error
+	Escalate(ctx context.Context, id int64, staffID string) error
 	StaffFeed(ctx context.Context, staffID, role, since string) ([]model.SOSStaffCase, error)
 	CanStaffSee(ctx context.Context, staffID, role string, id int64) (bool, error)
 	PushAudience(ctx context.Context, id int64) (*repository.SOSAudience, error)
@@ -236,6 +254,56 @@ func (s *WBWSOSService) Resolve(ctx context.Context, staffID, role string, id in
 		return err
 	}
 	s.announceClosed(ctx, id)
+	return nil
+}
+
+// Report — เจ้าหน้าที่รายงานผลหลังไปถึงเคส
+//
+// จุดตัดสินใจอยู่ที่นี่ที่เดียว ไม่ใช่ที่ฝั่งแอป: แอปส่งมาว่า "เจออะไร" เซิร์ฟเวอร์เป็นคนตัดสินว่า
+// สิ่งนั้นแปลว่าปิดเคสหรือยกระดับ · ถ้าปล่อยให้แอปเลือกเรียก resolve หรือ severity เอง กติกา
+// จะอยู่ในไคลเอนต์สองตัว (Android/iOS) ที่มีโอกาสไม่ตรงกัน
+func (s *WBWSOSService) Report(ctx context.Context, staffID, role string, id int64, outcome string) error {
+	if !sosReportOutcomes[outcome] {
+		return ErrSOSBadReason
+	}
+	ok, err := s.repo.CanStaffSee(ctx, staffID, role, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return repository.ErrSOSNotFound
+	}
+
+	if sosReportCloses[outcome] {
+		if err := s.repo.Resolve(ctx, id, staffID, outcome); err != nil {
+			return err
+		}
+		s.announceClosed(ctx, id)
+		return nil
+	}
+
+	if err := s.repo.SetSeverity(ctx, id, staffID, outcome); err != nil {
+		return err
+	}
+	// นี่คือจุดที่ "SOS จริง" เกิดขึ้น
+	//
+	// เจ้าหน้าที่ประจำกลุ่มไปดูมาแล้วบอกว่าเรื่องจริง major/urgent จึงไม่ได้แค่ตีระดับ แต่
+	// เปิดเคสให้เจ้าหน้าที่ทั้งงานเห็น · false_alarm กับ minor ไม่ยกระดับ เพราะจบไปแล้ว —
+	// การเรียกทุกคนมาดูเรื่องที่ปิดไปแล้วคือสิ่งที่ขั้นแรกมีไว้เพื่อกันตั้งแต่ต้น
+	if err := s.repo.Escalate(ctx, id, staffID); err != nil {
+		return err
+	}
+	// ปลุก long-poll ให้จอเจ้าหน้าที่คนอื่นเห็นการยกระดับทันที ไม่ต้องรอครบรอบ 25 วิ ·
+	// ใช้ Notify ตรง ๆ ไม่ใช่ announceClosed เพราะเคสนี้ยังไม่ปิด — announceClosed ยิง push
+	// บอกผู้เข้าร่วมว่าเรื่องจบแล้ว ซึ่งตรงข้ามกับความจริงของ major/urgent
+	detached := context.WithoutCancel(ctx)
+	goSafe("sos.announceSeverity", func() {
+		cc, cancel := context.WithTimeout(detached, sosNotifyTimeout)
+		defer cancel()
+		if err := s.events.Notify(cc); err != nil {
+			slog.Error("ปลุก long-poll หลังยกระดับเคสไม่สำเร็จ", "err", err)
+		}
+	})
 	return nil
 }
 

@@ -217,18 +217,27 @@ type Checkpoint struct {
 // แอปเอาไปขึ้นบนการ์ดฐานในแท็บแผนที่ ซึ่งเดิมรู้ชื่อเฉพาะฐานที่เช็คอินไปแล้ว (จาก /me/progress
 // ที่คืนแค่ checked_in) ฐานที่ยังไม่ไปถึงจึงขึ้นว่า "ฐานที่ N" ทั้งที่ชื่อมีอยู่ในตารางนี้ตลอด
 //
-// **ไม่มี lat/lng โดยตั้งใจ** — ตำแหน่งหมุดบนแผนที่ 3D มาจากตัวไฟล์โมเดล ส่งพิกัดไปด้วยจะมี
-// แหล่งความจริงสองที่แข่งกัน ซึ่งเป็นกับดักที่เพิ่งทำให้พิกัดในตารางนี้ผิดมา 8 แถว (ดู migration
-// 000026) · ฝั่งที่ต้องใช้พิกัดจริง ๆ คือ NearestCheckpoint ของ SOS ซึ่งคำนวณบนเซิร์ฟเวอร์อยู่แล้ว
+// **lat/lng กลับมาแล้ว** — เดิมตั้งใจไม่ส่ง เพราะตำแหน่งหมุดบนแผนที่ 3D ของ iOS มาจาก
+// ตัวไฟล์โมเดล การส่งพิกัดไปด้วยจึงมีแหล่งความจริงสองที่แข่งกัน (กับดักเดียวกับที่ทำให้พิกัด
+// ในตารางนี้ผิดมา 8 แถว ดู migration 000026)
+//
+// เหตุผลนั้นยังจริงสำหรับ iOS และไม่ได้เปลี่ยน — แต่ใช้กับ Android ไม่ได้ เพราะแท็บแผนที่ของ
+// Android เป็น Google Maps ที่วาดหมุดจากพิกัดจริง ไม่มีไฟล์โมเดลให้อ่านตำแหน่งจาก ก่อนหน้านี้
+// แอปจึงวาดฐานไม่ได้เลยสักฐาน — เส้นทางขึ้น แต่ไม่มีอะไรบอกว่าฐานอยู่ตรงไหน
+//
+// เป็น pointer เพราะ lat/lng ใน DB เป็น NULL ได้ · ฝั่งแอปข้ามแถวที่ไม่มีพิกัดแทนที่จะ
+// ปักหมุดที่ (0,0) กลางมหาสมุทรแอตแลนติก
 type ParticipantCheckpoint struct {
-	ID              int     `json:"id"`
-	Sequence        *int    `json:"sequence"`
-	Name            string  `json:"name"`
-	NameEn          *string `json:"name_en"`
-	ActivityName    *string `json:"activity_name"`
-	ActivityNameEn  *string `json:"activity_name_en"`
-	Type            string  `json:"type"`
-	RequiresCheckin bool    `json:"requires_checkin"`
+	ID              int      `json:"id"`
+	Sequence        *int     `json:"sequence"`
+	Name            string   `json:"name"`
+	NameEn          *string  `json:"name_en"`
+	ActivityName    *string  `json:"activity_name"`
+	ActivityNameEn  *string  `json:"activity_name_en"`
+	Type            string   `json:"type"`
+	RequiresCheckin bool     `json:"requires_checkin"`
+	Lat             *float64 `json:"lat"`
+	Lng             *float64 `json:"lng"`
 }
 
 // CheckpointPatched — response ของ PATCH ไม่มี key staff (ตามของเดิม)
@@ -425,6 +434,13 @@ type CheckinProgress struct {
 	// ต่างจาก SOSCase.EmergencyPhone ที่มาถึงก็ต่อเมื่อส่ง SOS สำเร็จแล้วเท่านั้น
 	// ว่างได้ตอน dev — แอปมีเบอร์ default ของตัวเองอยู่แล้ว
 	EmergencyPhone string `json:"emergency_phone"`
+	// EventFeedbackAnswered — ตอบความเห็นต่อการเดินทั้งงานไปแล้วหรือยัง (ตาราง event_feedback)
+	//
+	// อยู่ตรงนี้เพราะแอปต้องรู้ว่า "เคยตอบไปแล้วไหม" ก่อนจะเปิดฟอร์มปิดทางตอนเดินครบ และ
+	// ที่เดียวที่รู้คือฐานข้อมูล ไม่ใช่เครื่อง — เครื่องลืมทุกครั้งที่ลงแอปใหม่ ล้างข้อมูล
+	// หรือเปลี่ยนเครื่อง แล้วจะถามซ้ำกับคนที่ตอบไปแล้ว ทรงเดียวกับ Answered ของแต่ละฐาน
+	// ที่มาจาก LEFT JOIN ไม่ใช่จาก flag ในแอป
+	EventFeedbackAnswered bool `json:"event_feedback_answered"`
 }
 
 /* ---------- ความเห็นต่อฐาน ---------- */
@@ -434,20 +450,58 @@ type CheckinProgress struct {
 // ClientID ทำให้ส่งซ้ำตอนเน็ตหลุดไม่เกิดแถวซ้ำ (unique ใน DB) — แอปสร้างเองก่อนยิง
 // และใช้ค่าเดิมทุกครั้งที่ retry
 type FeedbackRequest struct {
-	ClientID     string  `json:"client_id"`
-	CheckpointID int     `json:"checkpoint_id"`
-	Rating       int     `json:"rating"` // 1 ไม่ชอบ · 2 เฉยๆ · 3 ชอบ
-	Comment      *string `json:"comment"`
-	DeviceTime   string  `json:"device_time"`
+	ClientID     string `json:"client_id"`
+	CheckpointID int    `json:"checkpoint_id"`
+	// Rating — ภาพรวม 1-5 · เดิมเป็น 1-3 (ไม่ชอบ/เฉยๆ/ชอบ) ดู migration 000031
+	Rating  int     `json:"rating"`
+	Comment *string `json:"comment"`
+
+	// สามข้อย่อย 1-5 · เป็น pointer เพราะไคลเอนต์รุ่นเก่าส่งมาแค่ Rating ข้อเดียว
+	// การบังคับให้ครบทุกข้อจะทำให้แอปเวอร์ชันก่อนหน้าส่งความเห็นไม่ได้เลย
+	RatingScenery  *int `json:"rating_scenery"`
+	RatingActivity *int `json:"rating_activity"`
+	RatingStaff    *int `json:"rating_staff"`
+	// RatingArea — พื้นที่ (ร่มเงา ที่นั่ง ที่ว่าง) แยกจาก RatingScenery ที่เป็นวิว · ดู migration 000032
+	RatingArea *int `json:"rating_area"`
+
+	DeviceTime string `json:"device_time"`
 }
 
 // CheckinFeedback — ความเห็นหนึ่งอันที่บันทึกแล้ว
 type CheckinFeedback struct {
-	ID           int64   `json:"id"`
-	CheckpointID int     `json:"checkpoint_id"`
-	Rating       int     `json:"rating"`
-	Comment      *string `json:"comment"`
-	CreatedAt    string  `json:"created_at"`
+	ID             int64   `json:"id"`
+	CheckpointID   int     `json:"checkpoint_id"`
+	Rating         int     `json:"rating"`
+	RatingScenery  *int    `json:"rating_scenery"`
+	RatingActivity *int    `json:"rating_activity"`
+	RatingStaff    *int    `json:"rating_staff"`
+	RatingArea     *int    `json:"rating_area"`
+	Comment        *string `json:"comment"`
+	CreatedAt      string  `json:"created_at"`
+}
+
+// EventFeedbackRequest — ความเห็นต่อการเดินทั้งงาน ถามครั้งเดียวตอนครบทุกฐาน
+//
+// ไม่มี CheckpointID โดยตั้งใจ — นี่คือเหตุผลที่ต้องมีตารางแยก (ดู migration 000033)
+// ไม่ใช่แถวใน checkin_feedback ที่บังคับให้ต้องชี้ไปฐานใดฐานหนึ่ง
+type EventFeedbackRequest struct {
+	ClientID string `json:"client_id"`
+	// Rating — ภาพรวมของการเดิน 1-5 · ข้อเดียวที่บังคับ ทรงเดียวกับ FeedbackRequest
+	Rating int `json:"rating"`
+	// RatingActivity — กิจกรรมตลอดเส้นทาง · ชื่อเดียวกับคอลัมน์ใน checkin_feedback เพราะ
+	// เป็นคำถามเดียวกันที่ย้ายที่ถาม ไม่ใช่คำถามใหม่
+	RatingActivity *int    `json:"rating_activity"`
+	Comment        *string `json:"comment"`
+	DeviceTime     string  `json:"device_time"`
+}
+
+// EventFeedback — ความเห็นต่อการเดินหนึ่งแถวที่บันทึกแล้ว
+type EventFeedback struct {
+	ID             int64   `json:"id"`
+	Rating         int     `json:"rating"`
+	RatingActivity *int    `json:"rating_activity"`
+	Comment        *string `json:"comment"`
+	CreatedAt      string  `json:"created_at"`
 }
 
 // AdminFeedbackRow — ความเห็นหนึ่งแถวสำหรับแอดมิน (ผูกชื่อผู้ตอบ ตามที่ตกลงไว้ใน spec)

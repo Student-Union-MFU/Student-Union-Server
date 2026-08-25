@@ -60,7 +60,7 @@ func (r *WBWCheckpointRepository) List(ctx context.Context) ([]model.Checkpoint,
 func (r *WBWCheckpointRepository) ListForParticipant(ctx context.Context) ([]model.ParticipantCheckpoint, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT checkpoint_id, sequence, name, name_en, activity_name, activity_name_en,
-		       type::text, requires_checkin
+		       type::text, requires_checkin, lat, lng
 		  FROM checkpoint
 		 ORDER BY sequence NULLS LAST, checkpoint_id`)
 	if err != nil {
@@ -74,7 +74,8 @@ func (r *WBWCheckpointRepository) ListForParticipant(ctx context.Context) ([]mod
 	for rows.Next() {
 		var c model.ParticipantCheckpoint
 		if err := rows.Scan(&c.ID, &c.Sequence, &c.Name, &c.NameEn,
-			&c.ActivityName, &c.ActivityNameEn, &c.Type, &c.RequiresCheckin); err != nil {
+			&c.ActivityName, &c.ActivityNameEn, &c.Type, &c.RequiresCheckin,
+			&c.Lat, &c.Lng); err != nil {
 			return nil, err
 		}
 		list = append(list, c)
@@ -158,6 +159,60 @@ func (r *WBWCheckpointRepository) Delete(ctx context.Context, id int) (string, e
 }
 
 // AssignStaff — idempotent (ON CONFLICT DO NOTHING) และรับเฉพาะ staff/admin
+// AssignGroupStaff — มอบหมายเจ้าหน้าที่ให้ประจำกลุ่มหนึ่ง
+//
+// รูปแบบเดียวกับ AssignStaff ของฐานทุกอย่าง รวมถึงการเช็คว่า user เป็น staff/admin จริง
+// ก่อน INSERT — ไม่งั้นจะมอบหมายผู้เข้าร่วมให้ดูแลกลุ่มตัวเองได้ ซึ่ง FK ไม่ได้ห้ามไว้
+func (r *WBWCheckpointRepository) AssignGroupStaff(ctx context.Context, groupID int, userID string) (string, error) {
+	var username string
+	err := r.db.QueryRow(ctx,
+		`SELECT username FROM wbw_user WHERE user_id = $1 AND role IN ('staff','admin')`, userID).Scan(&username)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err := r.db.Exec(ctx,
+		`INSERT INTO group_staff (group_id, user_id) VALUES ($1, $2)
+		 ON CONFLICT DO NOTHING`, groupID, userID); err != nil {
+		return "", err
+	}
+	return username, nil
+}
+
+// RemoveGroupStaff — ถอนการมอบหมาย · false = ไม่มีแถวนั้นอยู่แล้ว
+func (r *WBWCheckpointRepository) RemoveGroupStaff(ctx context.Context, groupID int, userID string) (bool, error) {
+	tag, err := r.db.Exec(ctx,
+		`DELETE FROM group_staff WHERE group_id = $1 AND user_id = $2`, groupID, userID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// GroupStaff — ใครประจำกลุ่มไหนบ้าง สำหรับหน้าแอดมิน
+func (r *WBWCheckpointRepository) GroupStaff(ctx context.Context, groupID int) ([]model.StaffRef, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT u.user_id::text, u.username, u.display_name
+		  FROM group_staff gs JOIN wbw_user u ON u.user_id = gs.user_id
+		 WHERE gs.group_id = $1
+		 ORDER BY u.username`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []model.StaffRef{}
+	for rows.Next() {
+		var ref model.StaffRef
+		if err := rows.Scan(&ref.ID, &ref.Username, &ref.DisplayName); err != nil {
+			return nil, err
+		}
+		list = append(list, ref)
+	}
+	return list, rows.Err()
+}
+
 func (r *WBWCheckpointRepository) AssignStaff(ctx context.Context, checkpointID int, userID string) (string, error) {
 	var username string
 	err := r.db.QueryRow(ctx,
@@ -341,6 +396,15 @@ func (r *WBWCheckpointRepository) Progress(ctx context.Context, participantID st
 	if err := r.db.QueryRow(ctx,
 		`SELECT count(*)::int FROM checkpoint WHERE requires_checkin`,
 	).Scan(&out.Total); err != nil {
+		return nil, err
+	}
+
+	// ตอบความเห็นต่อการเดินไปแล้วหรือยัง — คำถามคนละระดับกับ Answered ของแต่ละฐาน จึงถาม
+	// แยก ไม่ได้ join เข้ามาในรายการด้านล่างซึ่งเป็นแถวต่อฐาน
+	if err := r.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM event_feedback WHERE participant_id = $1::uuid)`,
+		participantID,
+	).Scan(&out.EventFeedbackAnswered); err != nil {
 		return nil, err
 	}
 

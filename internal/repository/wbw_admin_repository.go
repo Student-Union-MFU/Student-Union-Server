@@ -380,6 +380,27 @@ func (r *WBWAdminRepository) ResetParticipantPassword(ctx context.Context, id, h
 
 // DeleteParticipant ลบข้อมูลที่อ้างถึง user ก่อน แล้วค่อยลบ wbw_user (ที่เหลือ cascade เอง)
 func (r *WBWAdminRepository) DeleteParticipant(ctx context.Context, id string) (string, error) {
+	return r.deleteParticipantTx(ctx, id, nil)
+}
+
+// DeleteOwnAccount — ผู้เข้าร่วมลบบัญชีตัวเองจากหน้า /privacy (DELETE /wbw/me)
+//
+// ลบเหมือน DeleteParticipant ทุกประการ ต่างแค่บันทึกลง admin_log ว่า "เจ้าตัวลบเอง"
+// ผู้จัดจึงกระทบยอดรายชื่อได้ว่าคนที่หายไปเป็นเพราะอะไร ไม่ใช่ข้อมูลหายเฉย ๆ
+// (ที่นั่งถูกคืนให้คนอื่นสมัครแทนเองโดย trigger trg_participant_count ของ 000021)
+//
+// ⚠ บันทึกต้องเขียน "ในทรานแซกชันเดียวกันและก่อนลบแถวผู้ใช้" ไม่ใช่ยิง LogAction
+// ตามหลัง: admin_log.actor_id เป็น FK ไปที่ wbw_user การ INSERT หลังแถวถูกลบไปแล้ว
+// จะชน FK แล้วหายเงียบ (LogAction ทิ้ง error ทั้งหมด) · เขียนก่อนแบบนี้
+// ON DELETE SET NULL จะเคลียร์ actor_id ให้เองตอนแถวผู้ใช้หายไป เหลือไว้แค่
+// actor_name/detail — ซึ่งเป็นสิ่งเดียวที่ผู้จัดต้องใช้จริงหลังบัญชีถูกลบ
+func (r *WBWAdminRepository) DeleteOwnAccount(ctx context.Context, id, username string) (string, error) {
+	return r.deleteParticipantTx(ctx, id, &username)
+}
+
+// selfDeleteBy: ไม่ nil = ผู้ใช้ลบเอง (ค่าคือชื่อผู้ใช้ที่จะลง admin_log) · nil = แอดมินลบให้
+// (แอดมินลบแล้ว handler เป็นคนเรียก Log เอง เพราะรู้ว่าแอดมินคนไหนเป็นคนสั่ง)
+func (r *WBWAdminRepository) deleteParticipantTx(ctx context.Context, id string, selfDeleteBy *string) (string, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return "", err
@@ -420,6 +441,14 @@ func (r *WBWAdminRepository) DeleteParticipant(ctx context.Context, id string) (
 		if _, err := tx.Exec(ctx,
 			`UPDATE participant_group SET member_count = GREATEST(member_count - 1, 0) WHERE group_id = $1`,
 			*groupID); err != nil {
+			return "", err
+		}
+	}
+
+	if selfDeleteBy != nil {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO admin_log (actor_id, actor_name, action, detail) VALUES ($1, $2, $3, $4)`,
+			id, *selfDeleteBy, "ลบบัญชีตนเอง", studentID); err != nil {
 			return "", err
 		}
 	}

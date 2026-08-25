@@ -240,3 +240,7 @@ func TestErrorBodiesAreTheOriginEnvelopeShape(t *testing.T) {
 		}
 	}
 }
+
+func (s *stubSOSRepo) SetSeverity(context.Context, int64, string, string) error { return nil }
+
+func (s *stubSOSRepo) Escalate(context.Context, int64, string) error { return nil }

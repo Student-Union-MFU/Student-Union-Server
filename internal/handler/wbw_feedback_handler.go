@@ -57,6 +57,43 @@ func (h *WBWFeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// SubmitEvent POST /wbw/me/event-feedback — ความเห็นต่อการเดินทั้งงาน
+//
+// ไม่มีเคส 403 แบบ Submit เพราะไม่มีฐานให้ต้องเคยเช็คอินก่อน — สี่เคสแทนที่จะเป็นห้า
+// (201 สร้างใหม่ / 200 retry client_id เดิม / 400 ค่าผิด / 409 ตอบไปแล้วด้วย client_id อื่น)
+func (h *WBWFeedbackHandler) SubmitEvent(w http.ResponseWriter, r *http.Request) {
+	claims := middleware.ClaimsFrom(r.Context())
+	if claims == nil {
+		middleware.WriteError(w, http.StatusUnauthorized, "ต้องล็อกอินก่อน")
+		return
+	}
+	var req model.EventFeedbackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "รูปแบบข้อมูลไม่ถูกต้อง")
+		return
+	}
+
+	saved, created, err := h.service.SubmitEvent(r.Context(), claims.Subject, req)
+	switch {
+	case err == nil:
+		if created {
+			middleware.WriteJSON(w, http.StatusCreated, saved)
+		} else {
+			middleware.WriteJSON(w, http.StatusOK, saved)
+		}
+	case errors.Is(err, service.ErrBadRating), errors.Is(err, service.ErrFeedbackMissingClientID):
+		middleware.WriteError(w, http.StatusBadRequest, err.Error())
+	default:
+		var dup repository.ErrEventAlreadyAnswered
+		if errors.As(err, &dup) {
+			middleware.WriteJSON(w, http.StatusConflict, dup.Existing)
+			return
+		}
+		slog.Error("submit event feedback failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "ส่งความเห็นไม่สำเร็จ")
+	}
+}
+
 // AdminList GET /wbw/admin/feedback — ความเห็นทั้งหมด + สรุปต่อฐาน
 func (h *WBWFeedbackHandler) AdminList(w http.ResponseWriter, r *http.Request) {
 	out, err := h.service.AdminList(r.Context())

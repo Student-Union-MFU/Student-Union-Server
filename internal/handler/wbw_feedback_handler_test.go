@@ -37,11 +37,23 @@ type fakeFeedbackRepo struct {
 
 	gotParticipantID string
 	gotRequest       model.FeedbackRequest
+
+	savedEvent   *model.EventFeedback
+	createdEvent bool
+	errEvent     error
+
+	gotEventParticipantID string
+	gotEventRequest       model.EventFeedbackRequest
 }
 
 func (f *fakeFeedbackRepo) Submit(_ context.Context, participantID string, req model.FeedbackRequest) (*model.CheckinFeedback, bool, error) {
 	f.gotParticipantID, f.gotRequest = participantID, req
 	return f.saved, f.created, f.err
+}
+
+func (f *fakeFeedbackRepo) SubmitEvent(_ context.Context, participantID string, req model.EventFeedbackRequest) (*model.EventFeedback, bool, error) {
+	f.gotEventParticipantID, f.gotEventRequest = participantID, req
+	return f.savedEvent, f.createdEvent, f.errEvent
 }
 
 func (f *fakeFeedbackRepo) ListAll(context.Context) ([]model.AdminFeedbackRow, error) {
@@ -247,5 +259,114 @@ func TestSubmitFeedbackMalformedJSONReturns400(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("JSON พังต้องได้ 400 ได้ %d", rec.Code)
+	}
+}
+
+/*
+POST /wbw/me/event-feedback — ความเห็นต่อการเดินทั้งงาน
+
+สี่เคสแทนที่จะเป็นห้า: ไม่มี 403 เพราะไม่มีฐานให้ต้องเคยเช็คอินก่อน การ map error เป็น
+status เป็นสัญญาเดียวกับ /me/feedback — แอปอ่าน status แล้วตัดสินใจต่างกันสิ้นเชิง
+(200/201 = สำเร็จ · 409 = ตอบไปแล้ว ปลายทาง · 400 = ทิ้ง · 5xx = เก็บไว้ retry)
+*/
+
+func postEventFeedback(t *testing.T, repo *fakeFeedbackRepo, body string, authorized bool) *httptest.ResponseRecorder {
+	t.Helper()
+
+	tokens := service.NewWBWTokenService()
+	h := NewWBWFeedbackHandler(service.NewWBWFeedbackService(repo))
+	protected := middleware.RequireAuth(tokens)(http.HandlerFunc(h.SubmitEvent))
+
+	req := httptest.NewRequest(http.MethodPost, "/wbw/me/event-feedback", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	if authorized {
+		tok, err := tokens.Sign(testParticipantID, "participant", "6931900011")
+		if err != nil {
+			t.Fatalf("เซ็น token ไม่สำเร็จ: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+
+	rec := httptest.NewRecorder()
+	protected.ServeHTTP(rec, req)
+	return rec
+}
+
+const validEventBody = `{"client_id":"c-9","rating":5,"rating_activity":4,"comment":"  สนุกมาก  ","device_time":"2026-08-29T09:00:00Z"}`
+
+// เคส 1 — บันทึกใหม่ = 201 · participant มาจาก claims ไม่ใช่ body และ comment ถูก trim
+func TestSubmitEventFeedbackCreatedReturns201(t *testing.T) {
+	repo := &fakeFeedbackRepo{savedEvent: &model.EventFeedback{ID: 9, Rating: 5}, createdEvent: true}
+	rec := postEventFeedback(t, repo, validEventBody, true)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("ต้องได้ 201 ได้ %d (%s)", rec.Code, rec.Body.String())
+	}
+	if repo.gotEventParticipantID != testParticipantID {
+		t.Fatalf("participant ต้องมาจาก token ได้ %q", repo.gotEventParticipantID)
+	}
+	if repo.gotEventRequest.Comment == nil || *repo.gotEventRequest.Comment != "สนุกมาก" {
+		t.Fatalf("comment ต้องถูก trim ก่อนลง repo ได้ %v", repo.gotEventRequest.Comment)
+	}
+}
+
+// เคส 2 — client_id เดิม = 200 ไม่ใช่ 409 · retry ตอนเน็ตกลับมาไม่ใช่ความเห็นที่สอง
+func TestSubmitEventFeedbackRetryReturns200(t *testing.T) {
+	repo := &fakeFeedbackRepo{savedEvent: &model.EventFeedback{ID: 9, Rating: 5}, createdEvent: false}
+	rec := postEventFeedback(t, repo, validEventBody, true)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ต้องได้ 200 ได้ %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// เคส 3 — rating นอกช่วง = 400 · ไม่เคยไปถึง repository
+func TestSubmitEventFeedbackBadRatingReturns400(t *testing.T) {
+	repo := &fakeFeedbackRepo{}
+	rec := postEventFeedback(t, repo, `{"client_id":"c-9","rating":6,"device_time":"2026-08-29T09:00:00Z"}`, true)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("ต้องได้ 400 ได้ %d (%s)", rec.Code, rec.Body.String())
+	}
+	if repo.gotEventParticipantID != "" {
+		t.Fatalf("ค่าผิดต้องไม่ถึง repository")
+	}
+}
+
+// rating_activity ที่ส่งมานอกช่วงก็ 400 เหมือนกัน — ไม่ส่งคือไม่ตอบ ซึ่งต่างจากตอบผิดช่วง
+func TestSubmitEventFeedbackBadActivityReturns400(t *testing.T) {
+	repo := &fakeFeedbackRepo{}
+	rec := postEventFeedback(t, repo, `{"client_id":"c-9","rating":3,"rating_activity":0,"device_time":"2026-08-29T09:00:00Z"}`, true)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("ต้องได้ 400 ได้ %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// เคส 4 — ตอบไปแล้วด้วย client_id อื่น = 409 พร้อมแถวเดิม เพื่อให้แอปเลิกถามได้เลย
+func TestSubmitEventFeedbackAlreadyAnsweredReturns409(t *testing.T) {
+	prev := &model.EventFeedback{ID: 4, Rating: 2}
+	repo := &fakeFeedbackRepo{errEvent: repository.ErrEventAlreadyAnswered{Existing: prev}}
+	rec := postEventFeedback(t, repo, validEventBody, true)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("ต้องได้ 409 ได้ %d (%s)", rec.Code, rec.Body.String())
+	}
+	var out model.EventFeedback
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body ไม่ใช่ EventFeedback: %v (%s)", err, rec.Body.String())
+	}
+	if out.ID != prev.ID {
+		t.Fatalf("409 ต้องคืนแถวเดิม ได้ %+v", out)
+	}
+}
+
+// ไม่มี token = 401 · ของจริงจาก RequireAuth
+func TestSubmitEventFeedbackUnauthorizedReturns401(t *testing.T) {
+	repo := &fakeFeedbackRepo{}
+	rec := postEventFeedback(t, repo, validEventBody, false)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("ต้องได้ 401 ได้ %d (%s)", rec.Code, rec.Body.String())
 	}
 }

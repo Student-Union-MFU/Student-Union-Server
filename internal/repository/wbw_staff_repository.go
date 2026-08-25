@@ -21,26 +21,20 @@ func NewWBWStaffRepository(db *pgxpool.Pool) *WBWStaffRepository {
 	return &WBWStaffRepository{db: db}
 }
 
-// Checkpoints — ฐานที่ staff คนนี้ประจำ · admin เห็นทุกฐาน
-// กรอง requires_checkin เพราะฐานที่ไม่ต้องเช็คอินไม่ควรโผล่ใน base picker ของแอป
+// Checkpoints — ทุกฐานที่ต้องเช็คอิน · เจ้าหน้าที่ทุกคนเห็นเท่ากันหมด ไม่ว่าจะประจำฐานไหน
+//
+// เดิมกรองด้วย checkpoint_staff (staff เห็นเฉพาะฐานที่ตัวเองถูกกำหนดให้ประจำ) — เอาออก
+// เพราะหน้างานจริงเจ้าหน้าที่สลับฐานกันตลอด และ "ไม่มีใครกำหนดฐานให้" ทำให้ picker ว่าง
+// จนสแกนไม่ได้เลย ซึ่งแย่กว่าการเห็นฐานเกินความจำเป็น · การกำหนดฐาน (checkpoint_staff)
+// ยังใช้อยู่ ไม่ได้ถูกทิ้ง — แต่ใช้สำหรับ "SOS ของฐานไหนเด้งหาใคร" เท่านั้น (ดู
+// wbw_sos_repository.go) ไม่ใช่สำหรับสิทธิ์การเช็คอิน
+//
+// กรอง requires_checkin เพราะฐานที่ไม่ต้องเช็คอิน (ห้องน้ำ/สวัสดิการ) ไม่ควรโผล่ใน picker
 func (r *WBWStaffRepository) Checkpoints(ctx context.Context, userID, role string) ([]model.StaffCheckpoint, error) {
-	var (
-		rows pgx.Rows
-		err  error
-	)
-	if role == "admin" {
-		rows, err = r.db.Query(ctx, `
-			SELECT checkpoint_id, name, sequence
-			  FROM checkpoint WHERE requires_checkin
-			 ORDER BY sequence NULLS LAST, checkpoint_id`)
-	} else {
-		rows, err = r.db.Query(ctx, `
-			SELECT c.checkpoint_id, c.name, c.sequence
-			  FROM checkpoint c
-			  JOIN checkpoint_staff cs ON cs.checkpoint_id = c.checkpoint_id
-			 WHERE cs.user_id = $1 AND c.requires_checkin
-			 ORDER BY c.sequence NULLS LAST, c.checkpoint_id`, userID)
-	}
+	rows, err := r.db.Query(ctx, `
+		SELECT checkpoint_id, name, sequence
+		  FROM checkpoint WHERE requires_checkin
+		 ORDER BY sequence NULLS LAST, checkpoint_id`)
 	if err != nil {
 		return nil, err
 	}

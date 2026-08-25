@@ -36,11 +36,23 @@ func scanMessages(rows pgx.Rows) ([]model.Message, error) {
 	return list, rows.Err()
 }
 
-// IsMember — อยู่ในกลุ่มนี้จริงไหม · ใช้กันทุก endpoint ของแชท
-func (r *WBWChatRepository) IsMember(ctx context.Context, userID string, groupID int) (bool, error) {
+// CanUseGroupChat — เข้าแชทกลุ่มนี้ได้ไหม · ใช้กันทุก endpoint ของแชท
+//
+// ชื่อเดิมคือ IsMember และเช็คแค่ participant_profile อย่างเดียว ซึ่งแปลว่าเจ้าหน้าที่
+// โดน 403 ทุก endpoint ของแชท — ไม่ใช่เพราะถูกห้าม แต่เพราะบัญชี staff ไม่มีแถวใน
+// participant_profile เลย จึง "ไม่ได้เป็นสมาชิกของกลุ่มไหนทั้งนั้น" โดยปริยาย
+//
+// เจ้าหน้าที่เข้าได้ทุกกลุ่ม ตั้งใจ: หน้างานคือประสานกับกลุ่มไหนก็ได้ที่ต้องการ ไม่ได้
+// ผูกกับกลุ่มใดกลุ่มหนึ่ง · participant ยังคงเข้าได้เฉพาะกลุ่มตัวเองเหมือนเดิม
+func (r *WBWChatRepository) CanUseGroupChat(ctx context.Context, userID string, groupID int) (bool, error) {
 	var ok bool
-	err := r.db.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM participant_profile WHERE user_id = $1 AND group_id = $2)`,
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+		         SELECT 1 FROM participant_profile WHERE user_id = $1 AND group_id = $2
+		       )
+		    OR EXISTS (
+		         SELECT 1 FROM wbw_user WHERE user_id = $1 AND role IN ('staff', 'admin')
+		       )`,
 		userID, groupID).Scan(&ok)
 	return ok, err
 }

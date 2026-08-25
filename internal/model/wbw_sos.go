@@ -58,8 +58,26 @@ type SOSStaffCase struct {
 	BloodType     *string `json:"blood_type"`
 	HealthNotes   *string `json:"health_notes"`
 	UpdatedAt     string  `json:"updated_at"`
+	// Severity — ระดับที่เจ้าหน้าที่ประเมินหลังไปถึง: minor / major / urgent · nil = ยังไม่ประเมิน
+	//
+	// เคสที่เป็น major หรือ urgent ยัง "เปิด" อยู่ ไม่ได้ปิด — ต่างจาก ResolveReason ที่มีค่า
+	// ก็ต่อเมื่อเคสจบแล้ว · แอปใช้ค่านี้เปลี่ยนสีการ์ดและลำดับความสำคัญในรายการ
+	Severity *string `json:"severity"`
+
+	// Escalated — ผ่านการยืนยันจากเจ้าหน้าที่ประจำกลุ่มแล้วหรือยัง
+	//
+	// false = ขั้นแรก ยังอยู่กับเจ้าหน้าที่ประจำกลุ่ม (+แอดมิน) เท่านั้น
+	// true  = SOS จริง เจ้าหน้าที่ทุกคนเห็น
+	Escalated bool `json:"escalated"`
 }
 
 type SOSResolveRequest struct {
 	Reason string `json:"reason"`
+}
+
+// SOSReportRequest — ผลที่เจ้าหน้าที่รายงานหลังไปถึงเคส
+//
+// false_alarm / minor / major / urgent · สองอันแรกปิดเคส สองอันหลังยกระดับโดยไม่ปิด
+type SOSReportRequest struct {
+	Outcome string `json:"outcome"`
 }
