@@ -121,3 +121,60 @@ type CheckinResult struct {
 type MePatchRequest struct {
 	PhotoURL *string `json:"photo_url"`
 }
+
+/* ============================================================
+   มุมมองผู้ดูแล — เห็นทุกห้อง และเห็นสิ่งที่ถูกจัดการไปแล้ว
+   ============================================================ */
+
+// ChatRoomSummary — หนึ่งห้องในรายการที่ผู้ดูแลเลือกเปิด
+//
+// DeletedCount/CensoredCount อยู่ในรายการห้อง ไม่ใช่แค่ในห้อง: คำถามแรกของคน
+// เปิดหน้านี้คือ "ห้องไหนมีเรื่อง" ซึ่งตอบได้ก็ต่อเมื่อตัวเลขนั้นอยู่ในรายการ
+type ChatRoomSummary struct {
+	GroupID       int     `json:"group_id"`
+	GroupNumber   int     `json:"group_number"`
+	MemberCount   int     `json:"member_count"`
+	MessageCount  int     `json:"message_count"`
+	DeletedCount  int     `json:"deleted_count"`
+	CensoredCount int     `json:"censored_count"`
+	LastMessageAt *string `json:"last_message_at"`
+}
+
+// AdminMessage — ข้อความหนึ่งในสายตาผู้ดูแล
+//
+// ต่างจาก Message ที่แอปได้รับสองอย่าง: Body ตรงนี้เป็นค่าดิบ (ข้อความที่ถูกลบ
+// ยังอ่านได้) และมี OriginalBody ของข้อความที่ถูกเซ็นเซอร์ · ทั้งสองอย่างคือสิ่ง
+// ที่คนต้องเห็นก่อนตัดสินใจว่าจะกู้คืนไหม
+type AdminMessage struct {
+	ID         int64   `json:"id"`
+	GroupID    int     `json:"group_id"`
+	SenderID   string  `json:"sender_id"`
+	ClientID   string  `json:"client_id"`
+	Body       string  `json:"body"`
+	CreatedAt  *string `json:"created_at"`
+	FirstName  *string `json:"first_name"`
+	LastName   *string `json:"last_name"`
+	Username   *string `json:"username"`
+	SenderRole *string `json:"sender_role"`
+	// StudentID — ว่างสำหรับบัญชีเจ้าหน้าที่/ผู้ดูแลที่ไม่ได้ผูกกับรหัสนักศึกษา
+	StudentID string  `json:"student_id"`
+	Avatar    *string `json:"avatar"`
+
+	DeletedAt  *string `json:"deleted_at"`
+	DeletedBy  *string `json:"deleted_by"`
+	CensoredAt *string `json:"censored_at"`
+	CensoredBy *string `json:"censored_by"`
+	// OriginalBody — ข้อความก่อนถูกเซ็นเซอร์ · null เมื่อไม่เคยถูกเซ็นเซอร์
+	OriginalBody *string `json:"original_body"`
+}
+
+// ChatModerateRequest — สิ่งที่ผู้ดูแลสั่งกับข้อความหนึ่ง
+//
+// เป็น action เดียวต่อครั้ง ไม่ใช่ก้อน patch หลายฟิลด์: "ลบ" กับ "เซ็นเซอร์" เป็น
+// การตัดสินใจคนละเรื่องที่บังเอิญแก้ตารางเดียวกัน การรวมเป็น patch เดียวเปิดทางให้
+// ส่งคำสั่งที่ขัดกันเองมาในคำขอเดียว (ลบและกู้คืนพร้อมกัน) ซึ่งไม่มีคำตอบที่ถูก
+type ChatModerateRequest struct {
+	Action string `json:"action"` // delete | restore | censor | uncensor
+	// Replacement — ข้อความที่จะให้ผู้เข้าร่วมเห็นแทน · ว่างได้ ระบบใส่ค่าตั้งต้นให้
+	Replacement string `json:"replacement"`
+}

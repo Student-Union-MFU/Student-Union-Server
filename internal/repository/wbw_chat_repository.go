@@ -19,9 +19,26 @@ func NewWBWChatRepository(db *pgxpool.Pool) *WBWChatRepository {
 
 // คอลัมน์ชุดเดียวกันทุก query ที่คืน Message — first_name/last_name มาจาก LEFT JOIN
 // เพราะ staff/admin ที่ไม่มี participant_profile ก็โพสต์ได้ (ชื่อจะเป็น null)
-const chatMessageCols = `m.id, m.group_id, m.sender_id, m.client_id, m.body,
+const chatMessageCols = `m.id, m.group_id, m.sender_id, m.client_id, ` + chatVisibleBody + `,
 	                     m.device_time::text, m.created_at::text, p.first_name, p.last_name,
 	                     p.avatar`
+
+// chatVisibleBody — "สิ่งที่คนอ่านเห็น" ของข้อความหนึ่ง หลังผ่านการจัดการของผู้ดูแล
+//
+// อยู่ใน chatMessageCols ซึ่งทุก query ที่คืน Message ใช้ร่วมกัน — แปลว่า endpoint
+// ของแชททุกตัวเคารพการลบ/เซ็นเซอร์โดยอัตโนมัติ ไม่มีทางมี endpoint ไหนลืม
+// (ถ้าแยกให้แต่ละที่เลือกเอง วันหนึ่งจะมีที่ที่ลืมแล้วปล่อยของเดิมหลุดออกไป)
+//
+// เซ็นเซอร์ไม่มีเงื่อนไขตรงนี้ เพราะ body ถูกเขียนทับด้วยข้อความแทนที่ไปแล้วตอน
+// สั่งเซ็นเซอร์ · ของเดิมย้ายไปอยู่ original_body ซึ่ง "ไม่มี" ใน projection นี้
+// โดยตั้งใจ — มีเฉพาะใน query ฝั่งผู้ดูแลเท่านั้น
+//
+// ข้อความแทนที่เป็นภาษาไทยตายตัวใน SQL ต่างจากที่อื่นในโปรเจกต์ที่ให้ฝั่งเว็บแปล:
+// ตัวรับปลายทางคือแอปมือถือที่ปล่อยไปแล้ว ซึ่งวาด body ตรง ๆ ไม่มีชั้นแปล การส่ง
+// คีย์ไปให้แทนจะขึ้นเป็นโค้ดดิบบนหน้าจอผู้เข้าร่วม
+const chatVisibleBody = `CASE WHEN m.deleted_at IS NOT NULL
+	                          THEN 'ข้อความนี้ถูกลบโดยผู้ดูแล'
+	                          ELSE m.body END`
 
 func scanMessages(rows pgx.Rows) ([]model.Message, error) {
 	defer rows.Close()
