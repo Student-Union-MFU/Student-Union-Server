@@ -516,11 +516,10 @@ func (r *WBWAdminRepository) ListLogs(ctx context.Context) ([]model.AdminLog, er
 //
 // จำกัดไว้แค่ photo_url โดยตั้งใจ · ฟิลด์อื่น (กลุ่ม, BIB, สำนักวิชา) เป็นของ admin
 // เปิดให้ PATCH ทั้ง profile จากฝั่งผู้ใช้ = เขาย้ายกลุ่มตัวเองข้ามการเช็คที่นั่งได้
-// UpdateOwnAvatar — ตั้งรูปประจำตัวจากชุดที่แอปกำหนด · nil = กลับไปใช้วงกลมสีเดิม
-func (r *WBWAdminRepository) UpdateOwnAvatar(ctx context.Context, userID string, avatar *string) error {
+func (r *WBWAdminRepository) UpdateOwnPhoto(ctx context.Context, userID string, photoURL *string) error {
 	tag, err := r.db.Exec(ctx,
-		`UPDATE participant_profile SET avatar = $1, updated_at = now() WHERE user_id = $2`,
-		avatar, userID)
+		`UPDATE participant_profile SET photo_url = $1, updated_at = now() WHERE user_id = $2`,
+		photoURL, userID)
 	if err != nil {
 		return err
 	}
@@ -530,10 +529,11 @@ func (r *WBWAdminRepository) UpdateOwnAvatar(ctx context.Context, userID string,
 	return nil
 }
 
-func (r *WBWAdminRepository) UpdateOwnPhoto(ctx context.Context, userID string, photoURL *string) error {
+// UpdateOwnAvatar — ตั้งรูปประจำตัวจากชุดที่แอปกำหนด · nil = กลับไปใช้วงกลมสีเดิม
+func (r *WBWAdminRepository) UpdateOwnAvatar(ctx context.Context, userID string, avatar *string) error {
 	tag, err := r.db.Exec(ctx,
-		`UPDATE participant_profile SET photo_url = $1, updated_at = now() WHERE user_id = $2`,
-		photoURL, userID)
+		`UPDATE participant_profile SET avatar = $1, updated_at = now() WHERE user_id = $2`,
+		avatar, userID)
 	if err != nil {
 		return err
 	}
