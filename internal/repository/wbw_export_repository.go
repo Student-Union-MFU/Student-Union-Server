@@ -29,7 +29,7 @@ func NewWBWExportRepository(db *pgxpool.Pool) *WBWExportRepository {
 
 // ParticipantHeader — ลำดับต้องตรงกับ SELECT ใน Participants() เป๊ะ
 var ParticipantHeader = []string{
-	"bib", "student_id", "first_name", "last_name", "sex", "date_of_birth",
+	"bib", "student_id", "email", "first_name", "last_name", "sex", "date_of_birth",
 	"contact_phone", "school", "major", "year", "group_number",
 	"checked_in", "leave_quota", "bases_checked_in",
 	"blood_type", "weight_kg", "height_cm",
@@ -47,6 +47,14 @@ func (r *WBWExportRepository) Participants(ctx context.Context) ([][]string, err
 	rows, err := r.db.Query(ctx, `
 		SELECT COALESCE(p.bib_number::text, ''),
 		       COALESCE(u.student_id, ''),
+		       -- อีเมลไม่ได้เก็บไว้ในฐานข้อมูล — ระบบไม่เคยถามผู้สมัคร · ที่อยู่ของ
+		       -- นักศึกษา มฟล. คือรหัสนักศึกษาต่อท้ายด้วยโดเมนเดียวกันทุกคน ซึ่งเป็น
+		       -- กติกาเดียวกับที่ MFUDomain (service/google_identity.go) ใช้ตรวจตอน
+		       -- เข้าสู่ระบบด้วย Google อยู่แล้ว · ประกอบตรงนี้แทนการเพิ่มคอลัมน์ที่
+		       -- จะต้องคอยดูแลให้ตรงกับรหัสนักศึกษาตลอดไป
+		       -- คนที่ไม่มีรหัสนักศึกษาได้ช่องว่าง ไม่ใช่ "@lamduan.mfu.ac.th" ลอย ๆ
+		       -- (NULL || text = NULL แล้ว COALESCE เก็บให้เป็น '')
+		       COALESCE(u.student_id || '@lamduan.mfu.ac.th', ''),
 		       COALESCE(p.first_name, ''), COALESCE(p.last_name, ''),
 		       COALESCE(p.sex::text, ''),
 		       COALESCE(to_char(p.date_of_birth, 'YYYY-MM-DD'), ''),
