@@ -81,3 +81,34 @@ type SOSResolveRequest struct {
 type SOSReportRequest struct {
 	Outcome string `json:"outcome"`
 }
+
+/* ---------- มุมมองแอดมิน ---------- */
+
+// SOSAdminPatch — สิ่งที่แอดมินแก้ได้ด้วยมือจากแผงผู้ดูแล
+//
+// ทุกช่องเป็น pointer เพื่อแยก "ไม่ได้ส่งมา" ออกจาก "ส่งมาเป็นค่าว่าง" ให้ได้จริง:
+// Severity = ตัวชี้ไปยัง "" แปลว่า "ล้างระดับที่เคยประเมินไว้" ส่วน nil แปลว่า
+// ไม่แตะ · ถ้าใช้ string ธรรมดาสองอย่างนี้จะเป็นค่าเดียวกันและล้างไม่ได้เลย
+type SOSAdminPatch struct {
+	Severity  *string `json:"severity"`
+	Escalated *bool   `json:"escalated"`
+	Resolved  *bool   `json:"resolved"`
+	Reason    *string `json:"reason"`
+}
+
+// SOSAdminCreate — แอดมินเปิดเคสแทนผู้เข้าร่วม
+//
+// มีไว้สำหรับกรณีที่คนแจ้งทางอื่น: วิทยุ โทรศัพท์ หรือเดินมาบอกที่จุดอำนวยการ
+// เคสพวกนี้ต้องอยู่ในระบบเดียวกับเคสที่กดจากแอป ไม่งั้นยอดรวมของทั้งงานจะนับ
+// เฉพาะคนที่มีมือถือใช้ได้ตอนนั้น ซึ่งเป็นกลุ่มที่มีปัญหาน้อยที่สุดโดยนิยาม
+//
+// ไม่มี ClientID/DeviceTime ให้ส่ง — ฝั่งเซิร์ฟเวอร์เป็นคนสร้าง เพราะต้นทางคือ
+// แผงเว็บที่ไม่มี outbox ให้ retry ด้วย id เดิมอยู่แล้ว
+type SOSAdminCreate struct {
+	ParticipantID string   `json:"participant_id"`
+	Message       *string  `json:"message"`
+	Severity      *string  `json:"severity"`
+	ForOther      bool     `json:"for_other"`
+	Lat           *float64 `json:"lat"`
+	Lng           *float64 `json:"lng"`
+}
