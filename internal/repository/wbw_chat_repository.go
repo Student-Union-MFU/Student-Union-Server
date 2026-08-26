@@ -20,7 +20,8 @@ func NewWBWChatRepository(db *pgxpool.Pool) *WBWChatRepository {
 // คอลัมน์ชุดเดียวกันทุก query ที่คืน Message — first_name/last_name มาจาก LEFT JOIN
 // เพราะ staff/admin ที่ไม่มี participant_profile ก็โพสต์ได้ (ชื่อจะเป็น null)
 const chatMessageCols = `m.id, m.group_id, m.sender_id, m.client_id, m.body,
-	                     m.device_time::text, m.created_at::text, p.first_name, p.last_name`
+	                     m.device_time::text, m.created_at::text, p.first_name, p.last_name,
+	                     p.avatar`
 
 func scanMessages(rows pgx.Rows) ([]model.Message, error) {
 	defer rows.Close()
@@ -28,7 +29,7 @@ func scanMessages(rows pgx.Rows) ([]model.Message, error) {
 	for rows.Next() {
 		var m model.Message
 		if err := rows.Scan(&m.ID, &m.GroupID, &m.SenderID, &m.ClientID, &m.Body,
-			&m.DeviceTime, &m.CreatedAt, &m.FirstName, &m.LastName); err != nil {
+			&m.DeviceTime, &m.CreatedAt, &m.FirstName, &m.LastName, &m.Avatar); err != nil {
 			return nil, err
 		}
 		list = append(list, m)
@@ -196,11 +197,12 @@ func (r *WBWChatRepository) InsertMessage(ctx context.Context, groupID int, send
 			   AND NOT EXISTS (SELECT 1 FROM ins)
 		)
 		SELECT r.id, r.group_id, r.sender_id::text, r.client_id::text, r.body,
-		       r.device_time::text, r.created_at::text, p.first_name, p.last_name
+		       r.device_time::text, r.created_at::text, p.first_name, p.last_name,
+		       p.avatar
 		  FROM row r LEFT JOIN participant_profile p ON p.user_id = r.sender_id`,
 		groupID, senderID, req.ClientID, req.Body, deviceTime,
 	).Scan(&m.ID, &m.GroupID, &m.SenderID, &m.ClientID, &m.Body,
-		&m.DeviceTime, &m.CreatedAt, &m.FirstName, &m.LastName)
+		&m.DeviceTime, &m.CreatedAt, &m.FirstName, &m.LastName, &m.Avatar)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}

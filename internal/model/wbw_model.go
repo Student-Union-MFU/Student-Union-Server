@@ -122,23 +122,25 @@ type ParticipantDetail struct {
 	// ซึ่งไม่ตรงกับที่ web-next ใช้อยู่ (id, bib) · เพิ่มเป็น key ใหม่คู่ขนานแทนที่จะ
 	// เปลี่ยนชื่อของเดิม — เปลี่ยนชื่อเมื่อไหร่ web-next พังทันที
 	// user_id/username/role เป็น field บังคับฝั่ง iOS ไม่มีแล้ว decode ไม่ผ่านทั้งก้อน
-	UserID                    string   `json:"user_id"`
-	Username                  string   `json:"username"`
-	Role                      string   `json:"role"`
-	BibNumber                 *int     `json:"bib_number"`
-	QRToken                   *string  `json:"qr_token"`
-	Year                      *int     `json:"year"`
-	FirstName                 *string  `json:"first_name"`
-	LastName                  *string  `json:"last_name"`
-	Sex                       *string  `json:"sex"`
-	DateOfBirth               *string  `json:"date_of_birth"`
-	ContactPhone              *string  `json:"contact_phone"`
-	SchoolID                  *int     `json:"school_id"`
-	SchoolName                *string  `json:"school_name"`
-	Major                     *string  `json:"major"`
-	GroupID                   *int     `json:"group_id"`
-	GroupNumber               *int     `json:"group_number"`
-	PhotoURL                  *string  `json:"photo_url"`
+	UserID       string  `json:"user_id"`
+	Username     string  `json:"username"`
+	Role         string  `json:"role"`
+	BibNumber    *int    `json:"bib_number"`
+	QRToken      *string `json:"qr_token"`
+	Year         *int    `json:"year"`
+	FirstName    *string `json:"first_name"`
+	LastName     *string `json:"last_name"`
+	Sex          *string `json:"sex"`
+	DateOfBirth  *string `json:"date_of_birth"`
+	ContactPhone *string `json:"contact_phone"`
+	SchoolID     *int    `json:"school_id"`
+	SchoolName   *string `json:"school_name"`
+	Major        *string `json:"major"`
+	GroupID      *int    `json:"group_id"`
+	GroupNumber  *int    `json:"group_number"`
+	PhotoURL     *string `json:"photo_url"`
+	// Avatar — คีย์รูปประจำตัวจากชุดที่แอปกำหนด · NULL = ยังไม่ได้เลือก
+	Avatar                    *string  `json:"avatar"`
 	CheckedIn                 bool     `json:"checked_in"`
 	LeaveQuota                int      `json:"leave_quota"`
 	EmergencyContactName      *string  `json:"emergency_contact_name"`

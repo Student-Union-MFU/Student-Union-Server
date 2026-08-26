@@ -32,7 +32,7 @@ func NewWBWGroupRepository(db *pgxpool.Pool) *WBWGroupRepository {
 // Members — สมาชิกในกลุ่ม พร้อมรูปกับสำนักวิชา สำหรับจอรายชื่อ
 func (r *WBWGroupRepository) Members(ctx context.Context, groupID int) ([]model.GroupMember, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT p.user_id::text, p.first_name, p.last_name, p.photo_url, p.bib_number, s.name
+		SELECT p.user_id::text, p.first_name, p.last_name, p.photo_url, p.avatar, p.bib_number, s.name
 		  FROM participant_profile p
 		  LEFT JOIN school s ON s.school_id = p.school_id
 		 WHERE p.group_id = $1
@@ -45,7 +45,7 @@ func (r *WBWGroupRepository) Members(ctx context.Context, groupID int) ([]model.
 	list := []model.GroupMember{}
 	for rows.Next() {
 		var m model.GroupMember
-		if err := rows.Scan(&m.UserID, &m.FirstName, &m.LastName, &m.PhotoURL, &m.Bib, &m.School); err != nil {
+		if err := rows.Scan(&m.UserID, &m.FirstName, &m.LastName, &m.PhotoURL, &m.Avatar, &m.Bib, &m.School); err != nil {
 			return nil, err
 		}
 		list = append(list, m)
