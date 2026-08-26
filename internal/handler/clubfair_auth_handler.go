@@ -56,6 +56,14 @@ func authError(w http.ResponseWriter, err error) {
 	case errors.Is(err, service.ErrClubFairEmailTaken):
 		appmw.WriteError(w, http.StatusConflict, "อีเมลหรือเบอร์นี้มีบัญชีอยู่แล้ว")
 
+	case errors.Is(err, repository.ErrClubFairPhoneTaken):
+		// 409 rather than the catch-all below, and the distinction is not
+		// cosmetic: the app reads a 401 on this route as an expired session and
+		// has already discarded the token by the time it renders anything, so a
+		// student who typed a number somebody else holds was signed out and told
+		// their session had ended. The account is fine; one field is not.
+		appmw.WriteError(w, http.StatusConflict, "เบอร์นี้ถูกใช้ไปแล้ว")
+
 	case errors.Is(err, service.ErrClubFairNotMFU):
 		// 403, not 401: nothing about the caller's credentials is wrong, the
 		// address simply is not eligible — and saying so is the only way they
