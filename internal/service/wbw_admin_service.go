@@ -23,13 +23,49 @@ var (
 
 var validCheckpointTypes = []string{"activity", "restroom", "welfare", "recreation", "service"}
 
+// participantCreator — เฉพาะเมธอดเดียวที่ service นี้ต้องใช้จาก WBWAuthService
+//
+// รับเป็น interface ไม่ใช่ตัวจริง เพื่อไม่ให้แผงผู้ดูแลลากทั้ง auth service (bcrypt,
+// การออก token, throttle) เข้ามาเป็น dependency ของทุกอย่างที่แตะ WBWAdminService
+type participantCreator interface {
+	Register(ctx context.Context, req model.RegisterRequest) (*model.AuthResponse, error)
+}
+
 type WBWAdminService struct {
 	admin *repository.WBWAdminRepository
 	cp    *repository.WBWCheckpointRepository
+	auth  participantCreator
 }
 
-func NewWBWAdminService(admin *repository.WBWAdminRepository, cp *repository.WBWCheckpointRepository) *WBWAdminService {
-	return &WBWAdminService{admin: admin, cp: cp}
+func NewWBWAdminService(
+	admin *repository.WBWAdminRepository, cp *repository.WBWCheckpointRepository, auth participantCreator,
+) *WBWAdminService {
+	return &WBWAdminService{admin: admin, cp: cp, auth: auth}
+}
+
+// CreateParticipant — แอดมินเพิ่มผู้เข้าร่วมด้วยมือ
+//
+// เดินเส้นทางเดียวกับหน้าสมัครสาธารณะ (auth.Register) ไม่ใช่ INSERT เส้นใหม่ —
+// คนที่แอดมินเพิ่มคือผู้เข้าร่วมจริงที่กินที่นั่งจริง ต้องผ่านการตัดโควตา ตรวจ
+// รหัสนักศึกษาซ้ำ ออกเลข BIB และเข้ารหัสรหัสผ่านด้วยกติกาชุดเดียวกันทั้งหมด
+// เส้นทางที่สองที่ข้ามอะไรไปสักอย่างคือที่มาของ "ทำไมคนนี้ไม่มี BIB" ในวันงาน
+//
+// token ที่ Register คืนมาถูกทิ้ง โดยตั้งใจ: แอดมินไม่ได้กำลังล็อกอินเป็นคนนั้น
+// และไม่ควรถือ token ของคนอื่นไว้ในเบราว์เซอร์ตัวเอง
+func (s *WBWAdminService) CreateParticipant(
+	ctx context.Context, req model.RegisterRequest, actorID, actorName string,
+) (*model.Participant, error) {
+	res, err := s.auth.Register(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	p, err := s.admin.GetParticipant(ctx, res.User.UserID)
+	if err != nil {
+		return nil, err
+	}
+	s.admin.LogAction(ctx, actorID, actorName, "participant_create",
+		"เพิ่มผู้เข้าร่วม "+res.User.Username)
+	return p, nil
 }
 
 /* ---------- passthrough ---------- */

@@ -95,6 +95,39 @@ func (h *WBWAdminHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	middleware.WriteJSON(w, http.StatusOK, stats)
 }
 
+// CreateParticipant POST /wbw/admin/participants — แอดมินเพิ่มผู้เข้าร่วมด้วยมือ
+//
+// ใช้ RegisterRequest ก้อนเดียวกับหน้าสมัครสาธารณะ เพื่อให้ฟอร์มฝั่งเว็บส่งรูปแบบ
+// เดิมได้ และเพื่อให้เงื่อนไขที่ backend บังคับ (โควตาเต็ม รหัสซ้ำ รหัสผ่านสั้น)
+// ตอบกลับมาเป็นข้อความเดียวกันทั้งสองทาง
+func (h *WBWAdminHandler) CreateParticipant(w http.ResponseWriter, r *http.Request) {
+	var req model.RegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "รูปแบบข้อมูลไม่ถูกต้อง")
+		return
+	}
+	actorID, actorName := actor(r)
+
+	p, err := h.service.CreateParticipant(r.Context(), req, actorID, actorName)
+	switch {
+	case err == nil:
+		middleware.WriteJSON(w, http.StatusCreated, p)
+	case errors.Is(err, service.ErrBadStudentID):
+		middleware.WriteError(w, http.StatusBadRequest, "รหัสนักศึกษาไม่ถูกต้อง")
+	case errors.Is(err, service.ErrShortPassword):
+		middleware.WriteError(w, http.StatusBadRequest, "รหัสผ่านอย่างน้อย 8 ตัว")
+	case errors.Is(err, service.ErrDuplicateUser):
+		middleware.WriteError(w, http.StatusConflict, "รหัสนักศึกษานี้สมัครไว้แล้ว")
+	case errors.Is(err, service.ErrEventFull):
+		middleware.WriteError(w, http.StatusConflict, "ที่นั่งเต็มแล้ว")
+	case errors.Is(err, service.ErrHasChronic):
+		middleware.WriteError(w, http.StatusBadRequest, "กิจกรรมรับเฉพาะผู้ไม่มีโรคประจำตัว")
+	default:
+		slog.Error("เพิ่มผู้เข้าร่วมจากแผงผู้ดูแลไม่สำเร็จ", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "เพิ่มผู้เข้าร่วมไม่สำเร็จ")
+	}
+}
+
 func (h *WBWAdminHandler) ListGroups(w http.ResponseWriter, r *http.Request) {
 	groups, err := h.service.ListGroups(r.Context())
 	if err != nil {

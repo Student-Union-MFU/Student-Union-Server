@@ -28,7 +28,15 @@ func (r *WBWCheckpointRepository) List(ctx context.Context) ([]model.Checkpoint,
 		       COALESCE(json_agg(
 		         json_build_object('id', u.user_id::text, 'username', u.username, 'display_name', u.display_name)
 		         ORDER BY u.username
-		       ) FILTER (WHERE u.user_id IS NOT NULL), '[]') AS staff
+		       ) FILTER (WHERE u.user_id IS NOT NULL), '[]') AS staff,
+		       -- subquery ไม่ใช่ JOIN โดยตั้งใจ: LEFT JOIN check_in เข้ามาตรงนี้จะคูณ
+		       -- จำนวนแถวกับ checkpoint_staff ทำให้ยอดเช็คอินของฐานที่มีเจ้าหน้าที่
+		       -- สองคนกลายเป็นสองเท่า ซึ่งเป็นบั๊กที่อ่านเหมือนข้อมูลจริงจนกว่าจะมีคน
+		       -- เอาไปเทียบกับหน้าอื่น
+		       (SELECT count(*)::int FROM check_in ci WHERE ci.checkpoint_id = c.checkpoint_id),
+		       (SELECT count(*)::int FROM checkin_feedback f WHERE f.checkpoint_id = c.checkpoint_id),
+		       (SELECT avg(f.rating)::float8 FROM checkin_feedback f WHERE f.checkpoint_id = c.checkpoint_id),
+		       (SELECT count(*)::int FROM sos_event e WHERE e.checkpoint_id = c.checkpoint_id)
 		  FROM checkpoint c
 		  LEFT JOIN checkpoint_staff cs ON cs.checkpoint_id = c.checkpoint_id
 		  LEFT JOIN wbw_user         u  ON u.user_id = cs.user_id
@@ -42,7 +50,8 @@ func (r *WBWCheckpointRepository) List(ctx context.Context) ([]model.Checkpoint,
 	list := []model.Checkpoint{}
 	for rows.Next() {
 		var c model.Checkpoint
-		if err := rows.Scan(&c.ID, &c.Name, &c.NameEn, &c.Type, &c.Sequence, &c.Staff); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.NameEn, &c.Type, &c.Sequence, &c.Staff,
+			&c.CheckinCount, &c.FeedbackCount, &c.AvgRating, &c.SOSCount); err != nil {
 			return nil, err
 		}
 		list = append(list, c)

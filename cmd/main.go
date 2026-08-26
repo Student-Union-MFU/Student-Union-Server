@@ -138,7 +138,7 @@ func main() {
 
 	wbwAdminRepo := repository.NewWBWAdminRepository(pool)
 	wbwCheckpointRepo := repository.NewWBWCheckpointRepository(pool)
-	wbwAdminService := service.NewWBWAdminService(wbwAdminRepo, wbwCheckpointRepo)
+	wbwAdminService := service.NewWBWAdminService(wbwAdminRepo, wbwCheckpointRepo, wbwAuthService)
 	wbwAdminHandler := handler.NewWBWAdminHandler(wbwAdminService)
 
 	wbwNotiRepo := repository.NewWBWNotificationRepository(pool)
@@ -183,6 +183,10 @@ func main() {
 	wbwFeedbackService := service.NewWBWFeedbackService(wbwFeedbackRepo)
 	wbwFeedbackHandler := handler.NewWBWFeedbackHandler(wbwFeedbackService)
 
+	// สถิติรวมสำหรับแท็บ "วิเคราะห์" ของแผงผู้ดูแล — อ่านอย่างเดียว ไม่แตะ repo อื่น
+	wbwAnalyticsRepo := repository.NewWBWAnalyticsRepository(pool)
+	wbwAnalyticsHandler := handler.NewWBWAnalyticsHandler(service.NewWBWAnalyticsService(wbwAnalyticsRepo))
+
 	wbwDeviceService := service.NewWBWDeviceService(wbwDeviceRepo)
 	wbwDeviceHandler := handler.NewWBWDeviceHandler(wbwDeviceService)
 
@@ -192,8 +196,23 @@ func main() {
 	sosRepo := repository.NewWBWSOSRepository(pool)
 	sosEvents := service.NewSOSEvents(pool, config.ConnectListener)
 	sosEvents.Start(context.Background())
-	wbwSOSHandler := handler.NewWBWSOSHandler(
-		service.NewWBWSOSService(sosRepo, sosEvents, wbwPushService, wbwNotiService, emergencyPhone))
+	// service ตัวเดียวถูกใช้สองทาง: handler ของเจ้าหน้าที่หน้างาน และ handler ของแอดมิน
+	// เคสที่แอดมินเปิดจากแผงจึงเดินเส้นทางแจ้งเตือน/push เส้นเดียวกับเคสที่กดจากแอป
+	// ถ้าแยกกันสร้างสอง instance เคสจากแผงจะไม่ปลุก long-poll ที่ instance อีกตัวถืออยู่
+	wbwSOSService := service.NewWBWSOSService(sosRepo, sosEvents, wbwPushService, wbwNotiService, emergencyPhone)
+	wbwSOSHandler := handler.NewWBWSOSHandler(wbwSOSService)
+	wbwSOSAdminHandler := handler.NewWBWSOSAdminHandler(
+		service.NewWBWSOSAdminService(sosRepo, wbwSOSService, wbwAdminRepo))
+
+	// การจัดการแชทโดยผู้ดูแล — ใช้ chatRepo กับ chatEvents ตัวเดียวกับเส้นทางปกติ
+	// เพื่อให้การลบ/เซ็นเซอร์ปลุก long-poll เส้นเดียวกับที่แอปฟังอยู่
+	wbwChatAdminHandler := handler.NewWBWChatAdminHandler(
+		service.NewWBWChatAdminService(wbwChatRepo, wbwAdminRepo, chatEvents))
+
+	// ส่งออก CSV — อ่านอย่างเดียว ไม่มี service ชั้นกลางเพราะไม่มีตรรกะให้แยก
+	// (handler แปลงแถวเป็นไฟล์ · repository ดึงแถว) การใส่ passthrough ไว้ตรงกลาง
+	// จะเป็นไฟล์ที่ไม่ทำอะไรเลยนอกจากส่งต่อ
+	wbwExportHandler := handler.NewWBWExportHandler(repository.NewWBWExportRepository(pool))
 
 	/*
 	   The two auth throttles.
@@ -475,9 +494,35 @@ func main() {
 				r.Get("/logs", wbwAdminHandler.ListLogs)
 				r.Get("/bases-overview", wbwAdminHandler.BasesOverview)
 				r.Get("/feedback", wbwFeedbackHandler.AdminList)
+				r.Get("/analytics", wbwAnalyticsHandler.Analytics)
+
+				// เคสฉุกเฉินในมุมแอดมิน — เห็นทุกเคสรวมที่ปิดแล้ว (ต่างจาก
+				// /staff/sos ที่ตอบเฉพาะเคสที่ยังต้องจัดการ) และแก้สถานะด้วยมือได้
+				r.Route("/sos", func(r chi.Router) {
+					r.Get("/", wbwSOSAdminHandler.List)
+					r.Post("/", wbwSOSAdminHandler.Create)
+					r.Patch("/{id}", wbwSOSAdminHandler.Patch)
+				})
+
+				// ส่งออกเป็นไฟล์ · นามสกุล .csv อยู่ใน path ไม่ใช่ query param
+				// เพื่อให้ลิงก์ที่ถูกแชร์/บันทึกไว้ยังบอกได้ว่าปลายทางคือไฟล์อะไร
+				r.Get("/export/participants.csv", wbwExportHandler.Participants)
+				r.Get("/export/staff.csv", wbwExportHandler.Staff)
+
+				// แชทกลุ่มในมุมผู้ดูแล — อ่านได้ทุกห้อง ลบ/เซ็นเซอร์ได้ทีละข้อความ
+				r.Route("/chat", func(r chi.Router) {
+					r.Get("/", wbwChatAdminHandler.Rooms)
+					// "search" ต้องมาก่อน "{groupId}" ไม่งั้น chi จับ "search" เป็น
+					// เลขกลุ่มแล้วตอบ 400 ทุกครั้ง — route ตายตัวชนะ pattern เสมอ
+					// ก็ต่อเมื่อประกาศไว้ก่อนในไฟล์นี้
+					r.Get("/search", wbwChatAdminHandler.Search)
+					r.Get("/{groupId}", wbwChatAdminHandler.Messages)
+					r.Post("/messages/{id}", wbwChatAdminHandler.Moderate)
+				})
 
 				r.Route("/participants", func(r chi.Router) {
 					r.Get("/", wbwAdminHandler.ListParticipants)
+					r.Post("/", wbwAdminHandler.CreateParticipant)
 					r.Get("/{id}/detail", wbwAdminHandler.ParticipantDetail)
 					r.Patch("/{id}", wbwAdminHandler.UpdateParticipant)
 					r.Post("/{id}/reset-password", wbwAdminHandler.ResetParticipantPassword)

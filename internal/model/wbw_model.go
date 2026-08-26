@@ -211,6 +211,18 @@ type Checkpoint struct {
 	Type     string     `json:"type"`
 	Sequence *int       `json:"sequence"`
 	Staff    []StaffRef `json:"staff"`
+
+	// ตัวเลขหน้างานที่แท็บ "ฐาน" ต้องเห็นคู่กับรายชื่อเจ้าหน้าที่
+	//
+	// เดิมแท็บนั้นตอบได้แค่ "ฐานนี้ชื่ออะไร ใครดูแล" ซึ่งไม่พอสำหรับคำถามที่คนเปิด
+	// แท็บนี้ถามจริงระหว่างงาน: ฐานไหนคนแน่น ฐานไหนยังไม่มีใครไปถึง ฐานไหนคนบ่น
+	// ทั้งสามตัวอยู่ในฐานข้อมูลอยู่แล้ว แค่ไม่เคยถูกส่งมาพร้อมกัน
+	//
+	// AvgRating เป็น pointer — ฐานที่ยังไม่มีใครให้คะแนนคือ "ไม่มีข้อมูล" ไม่ใช่ 0 ดาว
+	CheckinCount  int      `json:"checkin_count"`
+	FeedbackCount int      `json:"feedback_count"`
+	AvgRating     *float64 `json:"avg_rating"`
+	SOSCount      int      `json:"sos_count"`
 }
 
 // ParticipantCheckpoint — ฐานหนึ่งใบตามที่ผู้เข้าร่วมเห็น (GET /wbw/checkpoints)
