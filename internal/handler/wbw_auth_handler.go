@@ -67,6 +67,10 @@ func (h *WBWAuthHandler) RegisterStaff(w http.ResponseWriter, r *http.Request) {
 			middleware.WriteError(w, http.StatusBadRequest, "รหัสผ่านต้องยาวอย่างน้อย 8 ตัว")
 		case errors.Is(err, service.ErrBadStaffRole):
 			middleware.WriteError(w, http.StatusBadRequest, "กรุณาเลือกหน้าที่ในงาน")
+		case errors.Is(err, service.ErrBadEmail):
+			middleware.WriteError(w, http.StatusBadRequest, "กรุณากรอกอีเมลมหาวิทยาลัย (@mfu.ac.th หรือ @lamduan.mfu.ac.th)")
+		case errors.Is(err, service.ErrEmailTaken):
+			middleware.WriteError(w, http.StatusConflict, "อีเมลนี้ถูกใช้กับบัญชีอื่นแล้ว")
 		case errors.Is(err, service.ErrDuplicateUser):
 			middleware.WriteError(w, http.StatusConflict, "ชื่อผู้ใช้นี้มีอยู่แล้ว")
 		case repository.IsPGCode(err, "23503"):
@@ -104,6 +108,54 @@ func (h *WBWAuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	middleware.WriteJSON(w, http.StatusOK, res)
+}
+
+// Forgot — POST /wbw/auth/forgot · เปิดสาธารณะ ส่งลิงก์ตั้งรหัสผ่านใหม่ไปที่อีเมล
+// ของเจ้าของบัญชี
+//
+// ⚠ ตอบ 200 เหมือนกันหมด ไม่ว่าจะมีบัญชีนั้นจริงหรือไม่ · ข้อความที่หน้าเว็บขึ้นต้อง
+// เป็น "ถ้ามีบัญชีนี้อยู่ เราส่งลิงก์ไปให้แล้ว" ไม่ใช่ "ส่งแล้ว" — endpoint ที่แยก
+// สองกรณีได้คือเครื่องมือไล่เช็คว่ารหัสนักศึกษาไหนสมัครงานนี้ไว้ (ดูเหตุผลเต็มที่
+// WBWAuthService.RequestPasswordReset) error เดียวที่โผล่ที่นี่ได้คือฐานข้อมูลพัง
+func (h *WBWAuthHandler) Forgot(w http.ResponseWriter, r *http.Request) {
+	var req model.ForgotPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
+		return
+	}
+
+	if err := h.service.RequestPasswordReset(r.Context(), req.Username); err != nil {
+		slog.Error("wbw forgot password failed", "err", err)
+		middleware.WriteError(w, http.StatusInternalServerError, "ขอลิงก์ตั้งรหัสผ่านใหม่ไม่สำเร็จ")
+		return
+	}
+	middleware.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// Reset — POST /wbw/auth/reset · แลกตั๋วจากลิงก์ในอีเมลเป็นรหัสผ่านใหม่
+//
+// ไม่คืน token ให้ล็อกอินต่อทันทีโดยตั้งใจ: คนที่เพิ่งตั้งรหัสใหม่ควรได้พิสูจน์ว่า
+// จำรหัสที่เพิ่งตั้งได้จริงก่อน และหน้าเว็บมีที่ให้เด้งกลับอยู่แล้ว (หน้าล็อกอิน)
+func (h *WBWAuthHandler) Reset(w http.ResponseWriter, r *http.Request) {
+	var req model.ResetPasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		middleware.WriteError(w, http.StatusBadRequest, "ข้อมูลไม่ถูกต้อง")
+		return
+	}
+
+	if err := h.service.ResetPassword(r.Context(), req.Token, req.Password); err != nil {
+		switch {
+		case errors.Is(err, service.ErrShortPassword):
+			middleware.WriteError(w, http.StatusBadRequest, "รหัสผ่านต้องยาวอย่างน้อย 8 ตัว")
+		case errors.Is(err, service.ErrBadResetToken):
+			middleware.WriteError(w, http.StatusBadRequest, "ลิงก์นี้หมดอายุหรือถูกใช้ไปแล้ว — กรุณาขอลิงก์ใหม่")
+		default:
+			slog.Error("wbw reset password failed", "err", err)
+			middleware.WriteError(w, http.StatusInternalServerError, "ตั้งรหัสผ่านใหม่ไม่สำเร็จ")
+		}
+		return
+	}
+	middleware.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // Capacity — GET /wbw/capacity · เปิดสาธารณะ หน้าสมัครเรียกก่อนแสดงฟอร์ม

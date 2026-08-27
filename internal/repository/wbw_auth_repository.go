@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"time"
 
 	"su-server/internal/model"
 
@@ -13,6 +14,10 @@ import (
 
 // ErrDuplicate = PG 23505 (unique violation)
 var ErrDuplicate = errors.New("duplicate")
+
+// ErrDuplicateEmail = อีเมลนี้มีบัญชีอื่นถืออยู่แล้ว (ยูนีค wbw_user_email_key)
+// แยกจาก ErrDuplicate ที่หมายถึง username/student_id ซ้ำ
+var ErrDuplicateEmail = errors.New("duplicate email")
 
 // ErrFull = ที่นั่งเต็ม — CHECK taken_within_max บน wbw_capacity ไม่ผ่าน (PG 23514)
 // ดู db/migrations/000021_wbw_capacity.up.sql
@@ -25,6 +30,14 @@ const capacityConstraint = "taken_within_max"
 func isCapacityFull(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == capacityConstraint
+}
+
+// isUniqueOn — 23505 ของ constraint/index ชื่อที่ระบุ · ตารางที่มียูนีคมากกว่าหนึ่ง
+// ตัวต้องใช้ตัวนี้ ไม่ใช่ IsPGCode เปล่า ๆ เพราะ "ซ้ำ" ของแต่ละคอลัมน์คนละเรื่องกัน
+// และผู้ใช้ต้องแก้คนละอย่าง
+func isUniqueOn(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
 }
 
 // IsPGCode ช่วยเช็ค SQLSTATE เช่น "23505" (unique) "23503" (fk) "22P02" (invalid text repr)
@@ -165,9 +178,13 @@ func (r *WBWAuthRepository) FindByUsername(ctx context.Context, username string)
 
 // RegisterStaff สร้างบัญชี staff สถานะ 'pending' + wbw_staff ใน transaction เดียว
 // — ล็อกอินไม่ได้จนกว่าแอดมินจะอนุมัติ
+//
+// email บังคับตั้งแต่ migration 000036: เจ้าหน้าที่ไม่มี student_id จึงคำนวณอีเมล
+// ย้อนหลังแบบ participant ไม่ได้ ถ้าไม่ถามตอนสมัครก็ไม่มีวันได้ แล้วคนคนนั้นจะ
+// รีเซ็ตรหัสผ่านเองไม่ได้ตลอดไป
 func (r *WBWAuthRepository) RegisterStaff(
 	ctx context.Context,
-	username, passwordHash string,
+	username, passwordHash, email string,
 	schoolID int,
 	major *string,
 	staffRole string,
@@ -180,12 +197,17 @@ func (r *WBWAuthRepository) RegisterStaff(
 
 	var u model.AuthUser
 	err = tx.QueryRow(ctx,
-		`INSERT INTO wbw_user (username, password_hash, role, status)
-		 VALUES ($1, $2, 'staff', 'pending')
+		`INSERT INTO wbw_user (username, password_hash, role, status, email)
+		 VALUES ($1, $2, 'staff', 'pending', $3)
 		 RETURNING user_id::text, username, role::text`,
-		username, passwordHash,
+		username, passwordHash, email,
 	).Scan(&u.UserID, &u.Username, &u.Role)
 	if err != nil {
+		// สองยูนีคบนตารางเดียวกัน — ต้องแยกให้ออก ไม่งั้นคนที่กรอกอีเมลซ้ำจะได้
+		// ข้อความว่า "ชื่อผู้ใช้นี้มีอยู่แล้ว" แล้วนั่งเปลี่ยนชื่อผู้ใช้ไปเรื่อย ๆ โดยไม่มีวันผ่าน
+		if isUniqueOn(err, "wbw_user_email_key") {
+			return nil, ErrDuplicateEmail
+		}
 		if IsPGCode(err, "23505") {
 			return nil, ErrDuplicate
 		}
@@ -205,6 +227,107 @@ func (r *WBWAuthRepository) RegisterStaff(
 		return nil, err
 	}
 	return &u, nil
+}
+
+/* ---------- ลืมรหัสผ่าน (migration 000036) ---------- */
+
+// ErrResetTokenInvalid — ตั๋วรีเซ็ตใช้ไม่ได้: ไม่มีจริง / หมดอายุ / ถูกใช้ไปแล้ว
+//
+// สามกรณีนี้ตอบเป็นอันเดียวกันโดยตั้งใจ ทั้งฝั่ง error และฝั่ง HTTP — คนที่ถือ
+// ตั๋วปลอมไม่ควรรู้ว่าเดาใกล้แล้วหรือแค่ช้าไป
+var ErrResetTokenInvalid = errors.New("reset token invalid")
+
+// FindResetTarget หาปลายทางของลิงก์รีเซ็ตจาก username ที่กรอกมา
+//
+// อีเมลมาจาก COALESCE(email, student_id || '@lamduan.mfu.ac.th') — participant
+// ทุกคนจึงมีปลายทางโดยไม่ต้อง backfill (username = student_id ตั้งแต่ตอนสมัคร)
+// ส่วนเจ้าหน้าที่รุ่นก่อน migration 000036 ได้ค่าว่าง เพราะไม่มีทั้งสองอย่าง
+//
+// คืน userID ว่าง = ไม่มีบัญชีชื่อนี้ · ไม่ใช่ error เพราะฝั่งเรียกตอบ 204 เหมือนกัน
+// หมดไม่ว่าเจอหรือไม่เจอ (กัน enumeration แบบเดียวกับ FindByUsername ข้างบน)
+func (r *WBWAuthRepository) FindResetTarget(ctx context.Context, username string) (userID, email, status string, err error) {
+	err = r.db.QueryRow(ctx,
+		`SELECT user_id::text,
+		        COALESCE(email, student_id || '@lamduan.mfu.ac.th', ''),
+		        status::text
+		   FROM wbw_user WHERE username = $1`, username,
+	).Scan(&userID, &email, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", "", nil
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+	return userID, email, status, nil
+}
+
+// CountRecentResets นับตั๋วที่ออกให้บัญชีนี้ไปตั้งแต่ since — ฝั่ง service เอาไปตัดสิน
+// ว่าเกินโควตาหรือยัง (นับรวมใบที่ใช้ไปแล้ว ดูเหตุผลใน migration 000036)
+func (r *WBWAuthRepository) CountRecentResets(ctx context.Context, userID string, since time.Time) (int, error) {
+	var n int
+	err := r.db.QueryRow(ctx,
+		`SELECT count(*)::int FROM wbw_password_reset
+		  WHERE user_id = $1 AND created_at > $2`, userID, since,
+	).Scan(&n)
+	return n, err
+}
+
+// InsertPasswordReset บันทึกตั๋วใบใหม่ · tokenHash เป็น sha256 ของ token จริง
+// ตัว token ไม่เคยผ่านมาถึงชั้นนี้
+func (r *WBWAuthRepository) InsertPasswordReset(ctx context.Context, userID string, tokenHash []byte, expiresAt time.Time) error {
+	_, err := r.db.Exec(ctx,
+		`INSERT INTO wbw_password_reset (token_hash, user_id, expires_at)
+		 VALUES ($1, $2, $3)`, tokenHash, userID, expiresAt)
+	return err
+}
+
+// ConsumePasswordReset แลกตั๋วเป็นรหัสผ่านใหม่ · คืน username ของเจ้าของตั๋ว
+//
+// ⚠ UPDATE ที่มีเงื่อนไขครบในตัวเอง ไม่ใช่ SELECT แล้วค่อยเช็คใน Go — สองคำสั่งแยกกัน
+// เปิดช่องให้ยิงลิงก์เดิมพร้อมกันสองครั้งแล้วผ่านทั้งคู่ (ทั้งคู่อ่านเจอ used_at เป็น
+// NULL ก่อนที่ฝั่งไหนจะเขียน) ที่นี่แถวถูกล็อกโดย UPDATE เอง คนที่สองจึงได้ 0 แถว
+//
+// ใบอื่นที่ยังไม่ถูกใช้ของคนเดียวกันถูกลบทิ้งท้าย transaction: คนที่กด "ลืมรหัสผ่าน"
+// ซ้ำสามรอบแล้วใช้ใบล่าสุด ไม่ควรเหลือใบเก่าที่ยังเปิดประตูได้อีกครึ่งชั่วโมง
+func (r *WBWAuthRepository) ConsumePasswordReset(ctx context.Context, tokenHash []byte, passwordHash string) (string, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var userID string
+	err = tx.QueryRow(ctx,
+		`UPDATE wbw_password_reset SET used_at = now()
+		  WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+		 RETURNING user_id::text`, tokenHash,
+	).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrResetTokenInvalid
+	}
+	if err != nil {
+		return "", err
+	}
+
+	var username string
+	err = tx.QueryRow(ctx,
+		`UPDATE wbw_user SET password_hash = $2 WHERE user_id = $1
+		 RETURNING username`, userID, passwordHash,
+	).Scan(&username)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM wbw_password_reset
+		  WHERE user_id = $1 AND used_at IS NULL`, userID); err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return username, nil
 }
 
 func isValidSex(s string) bool {
