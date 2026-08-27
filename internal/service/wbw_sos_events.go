@@ -33,7 +33,7 @@ func (b *reconnectBackoff) next() time.Duration {
 	if b.d < 30*time.Second {
 		b.d *= 2
 		if b.d > 30*time.Second {
-			b.d = 30*time.Second
+			b.d = 30 * time.Second
 		}
 	}
 	return result

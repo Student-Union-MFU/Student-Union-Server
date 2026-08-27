@@ -32,11 +32,15 @@ func (f *fakeStaffRepo) Checkin(context.Context, string, int, *string, *int) (*m
 	return f.result, f.err
 }
 
-func (f *fakeStaffRepo) CheckpointName(context.Context, int) string { return "ฐานทดสอบ" }
+func (f *fakeStaffRepo) CheckpointName(context.Context, int) string {
+	return "ฐานทดสอบ"
+}
 
 // ตัวปลอมของบริการแจ้งเตือน — ส่งคำขอที่ได้รับเข้า channel ให้เทสรอได้จริง
 // (notifyFeedback ทำงานใน goroutine แยก assert ทันทีหลัง Checkin คืนค่าจะแข่งกันเสมอ)
-type fakeNotifier struct{ created chan model.NotificationRequest }
+type fakeNotifier struct {
+	created chan model.NotificationRequest
+}
 
 func newFakeNotifier() *fakeNotifier {
 	return &fakeNotifier{created: make(chan model.NotificationRequest, 4)}

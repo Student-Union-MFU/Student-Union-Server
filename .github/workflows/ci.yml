@@ -1,0 +1,93 @@
+# CI — what `make check` runs, on every push and pull request.
+#
+# The Makefile has said "check: fmt vet test ## fmt + vet + test, what CI would
+# run" since long before this file existed. This is that sentence, made real.
+#
+# ⚠ This does NOT reproduce `make check` verbatim, on purpose. `make fmt` runs
+# `go fmt ./...`, which REWRITES files in place and exits 0 whether or not it
+# changed anything — as a gate it passes on unformatted code every time. The
+# formatting step below uses `gofmt -l` and fails on a non-empty list instead,
+# which is the check `go fmt` only looks like it is.
+#
+# The DB-backed suite (WBW_DB_TESTS=1) is deliberately NOT here yet. It needs
+# fixtures that do not exist on a freshly migrated schema — see the note at the
+# bottom of this file.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run's answer irrelevant.
+# Cancel it rather than pay for both and read the stale one by accident.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: fmt · vet · build · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # go-version-file rather than a pinned string, so this follows go.mod
+      # (currently 1.26.3) and cannot drift from what the module declares.
+      # setup-go caches the module and build caches on its own.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # `gofmt -l` prints the files that are NOT formatted and exits 0 either
+      # way, so the exit code is useless — the file list is the signal. Print it
+      # before failing, otherwise the log says only "Process exited with 1".
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # Build separately from test so a compile error reads as a compile error
+      # rather than as every package failing at once.
+      - name: go build
+        run: go build ./...
+
+      # No .env exists on a runner. Every DB-backed test skips itself unless
+      # WBW_DB_TESTS=1, and nothing else here reads config, so this is green
+      # without any secret — verified by running the suite against a clean
+      # `git archive` export with no .env present.
+      - name: go test
+        run: go test ./...
+
+# ---------------------------------------------------------------------------
+# NOT YET: the WBW_DB_TESTS=1 job
+#
+# The mechanics work. A plain `postgres:15-alpine` service container plus
+# `migrate/migrate` over db/migrations applies all 35 migrations cleanly, and
+# the tests already prefer WBW_TEST_DSN over the .env fallback, which is exactly
+# the seam a runner needs. Migration 000027's `CREATE EXTENSION
+# pg_stat_statements` succeeds even without shared_preload_libraries (only
+# SELECTing the view fails, and no test does), so the service container needs no
+# command override — which matters, because GitHub Actions `services:` cannot
+# override one.
+#
+# What blocks it is data, not plumbing. Against a freshly migrated schema 17
+# tests fail: 11 want a participant account "6931900011" that no migration
+# creates, and the rest want capacity and staff-assignment state that is likewise
+# not seeded. They pass only on a database where somebody made those rows by
+# hand, so they are green on one laptop and red everywhere else — including on a
+# fresh clone of this repo.
+#
+# Note that "6931900011" is the shape CLAUDE.md explicitly rules out for
+# fixtures: "never digits that look like a student id". The capacity test's
+# "captest-" prefix is the rule being followed. Making the non-compliant tests
+# create their own captest- rows and clean them up is both the repo's own stated
+# convention and precisely what this job needs to go green.
+# ---------------------------------------------------------------------------

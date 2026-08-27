@@ -58,7 +58,7 @@ func getCheckpoints(t *testing.T, repo *fakeCheckpointRepo, authorized bool) *ht
 	return rec
 }
 
-func seq(n int) *int { return &n }
+func seq(n int) *int       { return &n }
 func str(s string) *string { return &s }
 
 func TestCheckpointsRequireLogin(t *testing.T) {
