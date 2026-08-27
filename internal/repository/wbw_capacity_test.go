@@ -225,7 +225,8 @@ func TestCapacityIgnoresStaffAndAdmin(t *testing.T) {
 	sid := testIDPrefix + "staff"
 	schoolID := 1
 	if _, err := repo.RegisterStaff(
-		context.Background(), sid, "$2a$10$notarealhashnotarealhash", schoolID, nil, "registration",
+		context.Background(), sid, "$2a$10$notarealhashnotarealhash", sid+"@lamduan.mfu.ac.th",
+		schoolID, nil, "registration",
 	); err != nil {
 		t.Fatalf("staff ต้องสมัครได้แม้ที่นั่งผู้เข้าร่วมเต็ม: %v", err)
 	}

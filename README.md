@@ -197,7 +197,9 @@ role check — `RequireRole` reads claims that `RequireAuth` put in the context.
 |--------|-------|------|-------------|
 | `POST` | `/wbw/auth/register` | — | Participant sign-up. `username` = `student_id`, role forced to `participant` |
 | `POST` | `/wbw/auth/login` | — | Username + password |
-| `POST` | `/wbw/auth/staff-register` | — | Staff sign up themselves; account is `pending` until an admin approves |
+| `POST` | `/wbw/auth/staff-register` | — | Staff sign up themselves; account is `pending` until an admin approves. An MFU email address is required — it is the only way they can ever reset their own password |
+| `POST` | `/wbw/auth/forgot` | — | Mail a one-shot reset link. Answers 200 whether or not the account exists, so it cannot be used to enumerate student ids |
+| `POST` | `/wbw/auth/reset` | — | Exchange the link's token for a new password. Single-use, 30 minutes |
 | `GET` | `/wbw/capacity` | — | Seats left. Reads one row |
 
 The three `/auth` routes sit behind `middleware.ThrottleBacklog`: bcrypt at cost

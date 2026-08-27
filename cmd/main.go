@@ -132,8 +132,21 @@ func main() {
 	// ---------- WBW (เดินรอบดอย) ----------
 	wbwTokens := service.NewWBWTokenService()
 
+	// อีเมลขาออก — ตอนนี้มีผู้ใช้รายเดียวคือลิงก์ตั้งรหัสผ่านใหม่ · ไม่ตั้ง SMTP_HOST
+	// = ปิดเงียบแบบเดียวกับ push ที่ไม่มี service account (ดู mail_service.go)
+	wbwMail := service.NewMailService()
+
+	// ฐานของลิงก์ในอีเมล — ที่อยู่ของ "เว็บ" ไม่ใช่ของ API ตัวนี้ · ต้องมาจาก env
+	// ฝั่งเซิร์ฟเวอร์เท่านั้น ห้ามประกอบจาก Host header ของ request ที่ขอ (ไม่งั้น
+	// ใครก็ทำให้ลิงก์รีเซ็ตของคนอื่นชี้ไปเว็บตัวเองได้)
+	webBaseURL := os.Getenv("WBW_WEB_BASE_URL")
+	if webBaseURL == "" {
+		webBaseURL = "http://localhost:3000"
+		slog.Warn("ไม่ได้ตั้ง WBW_WEB_BASE_URL — ลิงก์ตั้งรหัสผ่านใหม่จะชี้ไป localhost", "fallback", webBaseURL)
+	}
+
 	wbwAuthRepo := repository.NewWBWAuthRepository(pool)
-	wbwAuthService := service.NewWBWAuthService(wbwAuthRepo, wbwTokens)
+	wbwAuthService := service.NewWBWAuthService(wbwAuthRepo, wbwTokens, wbwMail, webBaseURL)
 	wbwAuthHandler := handler.NewWBWAuthHandler(wbwAuthService)
 
 	wbwAdminRepo := repository.NewWBWAdminRepository(pool)
@@ -477,6 +490,12 @@ func main() {
 			r.Post("/login", wbwAuthHandler.Login)
 			// เจ้าหน้าที่สมัครเอง — สร้างบัญชี pending รอแอดมินอนุมัติ (throttle เดียวกับ auth)
 			r.Post("/staff-register", wbwAuthHandler.RegisterStaff)
+			// ลืมรหัสผ่าน — ขอลิงก์ทางอีเมล แล้วเอาตั๋วจากลิงก์มาตั้งรหัสใหม่
+			// อยู่ในกลุ่มนี้เพราะ /reset ทำ bcrypt เหมือน login ทุกประการ ส่วน /forgot
+			// ไม่ทำ แต่เป็น endpoint สาธารณะที่ยิงซ้ำได้ไม่จำกัด จึงควรอยู่ในคิวเดียวกัน
+			// (โควตาต่อบัญชีอยู่คนละชั้น — ดู resetMaxPerHour ใน wbw_auth_service.go)
+			r.Post("/forgot", wbwAuthHandler.Forgot)
+			r.Post("/reset", wbwAuthHandler.Reset)
 		})
 
 		// จำนวนที่นั่งคงเหลือ — เปิดสาธารณะ หน้าสมัครเรียกก่อนให้กรอกฟอร์ม

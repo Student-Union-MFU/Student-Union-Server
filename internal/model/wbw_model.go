@@ -57,11 +57,27 @@ type LoginRequest struct {
 // StaffRegisterRequest — เจ้าหน้าที่สมัครเอง (ต้องรอแอดมินอนุมัติ)
 // ไม่มี display_name แล้ว — ถามสำนักวิชา/สาขา/หน้าที่ในงานแทน
 type StaffRegisterRequest struct {
-	Username  string `json:"username"`
-	Password  string `json:"password"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	// อีเมลมหาวิทยาลัย บังคับตั้งแต่ migration 000036 — ช่องทางเดียวที่เจ้าหน้าที่
+	// จะกู้รหัสผ่านเองได้ เพราะไม่มี student_id ให้คำนวณเหมือนผู้เข้าร่วม
+	Email     string `json:"email"`
 	SchoolID  *int   `json:"school_id"`
 	Major     string `json:"major"`
 	StaffRole string `json:"staff_role"`
+}
+
+// ForgotPasswordRequest — ขอลิงก์ตั้งรหัสผ่านใหม่ · ช่องเดียวกับช่อง username
+// ตอนล็อกอิน (ผู้เข้าร่วมกรอกรหัสนักศึกษา เจ้าหน้าที่กรอกชื่อผู้ใช้) ไม่ได้ถามอีเมล
+// เพราะเจ้าตัวไม่จำเป็นต้องรู้ว่าระบบเก็บอีเมลไหนไว้ให้
+type ForgotPasswordRequest struct {
+	Username string `json:"username"`
+}
+
+// ResetPasswordRequest — ตั้งรหัสผ่านใหม่ด้วยตั๋วจากลิงก์ในอีเมล
+type ResetPasswordRequest struct {
+	Token    string `json:"token"`
+	Password string `json:"password"`
 }
 
 // StaffRequest — คำขอเป็นเจ้าหน้าที่ที่ยังรออนุมัติ (แสดงในแผงผู้ดูแล)
