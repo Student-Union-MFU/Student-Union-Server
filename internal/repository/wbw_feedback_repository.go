@@ -216,7 +216,9 @@ func (r *WBWFeedbackRepository) SummaryByCheckpoint(ctx context.Context) ([]mode
 		SELECT c.checkpoint_id, c.name,
 		       count(*) FILTER (WHERE f.rating = 1)::int,
 		       count(*) FILTER (WHERE f.rating = 2)::int,
-		       count(*) FILTER (WHERE f.rating = 3)::int
+		       count(*) FILTER (WHERE f.rating = 3)::int,
+		       count(*) FILTER (WHERE f.rating = 4)::int,
+		       count(*) FILTER (WHERE f.rating = 5)::int
 		  FROM checkpoint c
 		  LEFT JOIN checkin_feedback f ON f.checkpoint_id = c.checkpoint_id
 		 WHERE c.requires_checkin
@@ -229,8 +231,12 @@ func (r *WBWFeedbackRepository) SummaryByCheckpoint(ctx context.Context) ([]mode
 
 	list := []model.FeedbackSummary{}
 	for rows.Next() {
-		var s model.FeedbackSummary
-		if err := rows.Scan(&s.CheckpointID, &s.Name, &s.Dislike, &s.Neutral, &s.Like); err != nil {
+		// สร้างใหม่ทุกแถว ไม่ใช่ตัวเดียวใช้ซ้ำ — slice เป็น reference ถ้าใช้ซ้ำทุกแถวใน
+		// list จะชี้ไปที่ก้อนเดียวกันแล้วกลายเป็นเลขของฐานสุดท้ายทั้งหมด
+		s := model.FeedbackSummary{Distribution: make([]int, 5)}
+		if err := rows.Scan(&s.CheckpointID, &s.Name,
+			&s.Distribution[0], &s.Distribution[1], &s.Distribution[2],
+			&s.Distribution[3], &s.Distribution[4]); err != nil {
 			return nil, err
 		}
 		list = append(list, s)
