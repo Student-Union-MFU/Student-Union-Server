@@ -539,12 +539,17 @@ type AdminFeedbackRow struct {
 }
 
 // FeedbackSummary — นับคะแนนต่อฐาน
+//
+// เดิมเป็นสามช่อง dislike/neutral/like ตามสเกล 1–3 ของ migration 000014 และไม่ได้ตามไปแก้
+// ตอน 000031 ขยายเป็น 1–5 ผลคือทุกคะแนน 4 และ 5 หายไปจากยอดเงียบ ๆ — ผลรวมของสามช่อง
+// น้อยกว่าจำนวนคนที่ตอบจริง โดยหน้าที่อ่านไม่มีทางรู้ว่าขาดไป
+//
+// Distribution ทรงเดียวกับ FeedbackStats.Distribution ตั้งใจให้เหมือนกัน: สองที่นี้นับของ
+// อย่างเดียวกันจากตารางเดียวกัน ถ้าคนละทรงจะมีวันที่ตัวเลขสองหน้าไม่ตรงกันแล้วหาสาเหตุยาก
 type FeedbackSummary struct {
 	CheckpointID int    `json:"checkpoint_id"`
 	Name         string `json:"name"`
-	Dislike      int    `json:"dislike"`
-	Neutral      int    `json:"neutral"`
-	Like         int    `json:"like"`
+	Distribution []int  `json:"distribution"` // ดัชนี 0..4 = 1..5
 }
 
 // AdminFeedbackResponse — สิ่งที่ GET /wbw/admin/feedback คืน
